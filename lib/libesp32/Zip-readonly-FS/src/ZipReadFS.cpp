@@ -171,6 +171,9 @@ public:
   operator bool() {
     return (bool) _f;
   }
+  bool setBufferSize(size_t size) {
+    return true;
+  }
 
 protected:
   File _f;
@@ -226,8 +229,12 @@ public:
     // do nothing
   }
 
+  bool setBufferSize(size_t size) {
+    return true;
+  }
+
   bool seek(uint32_t pos, SeekMode mode) {
-    AddLog(LOG_LEVEL_DEBUG, "ZIP: seek pos=%i mode=%i", pos, mode);
+    // AddLog(LOG_LEVEL_DEBUG, "ZIP: seek pos=%i mode=%i", pos, mode);
     if (SeekSet == mode) {
       if (pos <= _len) {
         _seek = pos;
@@ -246,12 +253,12 @@ public:
   }
 
   size_t position() const {
-    AddLog(LOG_LEVEL_DEBUG, "ZIP: position return=%i", _seek);
+    // AddLog(LOG_LEVEL_DEBUG, "ZIP: position return=%i", _seek);
     return _seek;
   }
 
   size_t size() const {
-    AddLog(LOG_LEVEL_DEBUG, "ZIP: size return=%i", _len);
+    // AddLog(LOG_LEVEL_DEBUG, "ZIP: size return=%i", _len);
     return _len;
   }
 
@@ -308,7 +315,9 @@ bool ZipArchive::parse(void) {
   const size_t zip_header_size = sizeof(header) - sizeof(header.padding);
 
   while (1) {
+    // AddLog(LOG_LEVEL_DEBUG, "ZIP: f->seek(%i)", offset);
     f->seek(offset);
+    // AddLog(LOG_LEVEL_DEBUG, "ZIP: f->read(%i)", zip_header_size);
     int32_t bytes_read = f->read(sizeof(header.padding) + (uint8_t*) &header, zip_header_size);
     if (bytes_read != zip_header_size) {
       break;
@@ -322,7 +331,7 @@ bool ZipArchive::parse(void) {
       return false;
     }
     if (header.signature2 != 0x0403) {
-      AddLog(LOG_LEVEL_DEBUG, "ZIP: end of file section");
+      // AddLog(LOG_LEVEL_DEBUG, "ZIP: end of file section");
       break;
     }
     // Check no extra field
@@ -348,6 +357,7 @@ bool ZipArchive::parse(void) {
 
     // read full filename
     char fname[header.filename_size + 1];
+    // AddLog(LOG_LEVEL_DEBUG, "ZIP: f->read(%i)", header.filename_size);
     if (f->read((uint8_t*) &fname[0], header.filename_size) != header.filename_size) {
       return false;
     }
@@ -371,7 +381,7 @@ bool ZipArchive::parse(void) {
     entry.last_mod = dos2unixtime((header.last_mod_date << 16) | header.last_mod_time);
     offset += header.size_uncompressed;
 
-    AddLog(LOG_LEVEL_DEBUG_MORE, "ZIP: found file '%s' (%i bytes - offset %i) - next entry %i", &fname[0], header.size_uncompressed, entry.file_start, offset);
+    // AddLog(LOG_LEVEL_DEBUG_MORE, "ZIP: found file '%s' (%i bytes - offset %i) - next entry %i", &fname[0], header.size_uncompressed, entry.file_start, offset);
   }
 
   return true;
@@ -383,12 +393,30 @@ bool ZipArchive::parse(void) {
 ** 
 ********************************************************************/
 
+/* get the FS corresponding to the prefix, typically /sd/ for sdcard */
+FS * ZipReadFSImpl::getFS(const char *path) const {
+  if (_fs == nullptr) { return nullptr; }
+  if (_alt_fs == nullptr || _alt_fs_prefix == nullptr) { return *_fs; }
+
+  /* from now neither _fs not _alt_fs are null
+  /* if however they point to the same value, then we don't have an alternative FS */
+  if (*_fs == *_alt_fs) { return *_fs; }
+
+  /* check prefix */
+  if (strncmp(_alt_fs_prefix, path, strlen(_alt_fs_prefix))) {
+    return *_alt_fs;
+  } else {
+    return *_fs;
+  }
+}
+
 FileImplPtr ZipReadFSImpl::open(const char* path, const char* mode, const bool create) {
-  if (*_fs == nullptr) { return nullptr; }
+  FS * fs = getFS(path);
+  if (fs == nullptr) { return nullptr; }
 
   if (strchr(path, '#')) {
     // we don't support any other mode than "r" and no-create
-    if (strcmp(mode, "r") != 0 || create)  {
+    if (strchr(mode, 'r') == NULL || create)  {
       AddLog(LOG_LEVEL_INFO, "ZIP: writing to zip is not supported");
       return ZipReadFileImplPtr();    // return an error
     }
@@ -402,9 +430,9 @@ FileImplPtr ZipReadFSImpl::open(const char* path, const char* mode, const bool c
     char *suffix = strtok_r(NULL, "", &tok);
     // if suffix starts with '/', skip the first char
     if (*suffix == '/') { suffix++; }
-    AddLog(LOG_LEVEL_DEBUG, "ZIP: prefix=%s suffix=%s", prefix, suffix);
+    // AddLog(LOG_LEVEL_DEBUG, "ZIP: prefix=%s suffix=%s", prefix, suffix);
     // parse ZIP archive
-    File zipfile = (*_fs)->open(prefix, "r", false);
+    File zipfile = fs->open(prefix, "r", false);
     if ((bool)zipfile) {
       // we could read the file
       ZipArchive zip_archive = ZipArchive(&zipfile);
@@ -413,8 +441,8 @@ FileImplPtr ZipReadFSImpl::open(const char* path, const char* mode, const bool c
       for (auto & entry : zip_archive.entries) {
         if (entry.file_name.equals(suffix)) {
           // found
-          AddLog(LOG_LEVEL_DEBUG, "ZIP: file '%s' in archive (start=%i - len=%i - last_mod=%i)", suffix, entry.file_start, entry.file_len, entry.last_mod);
-          return ZipItemImplPtr(new ZipItemImpl((*_fs)->open(prefix, "r", false), entry.file_start, entry.file_len, entry.last_mod));
+          // AddLog(LOG_LEVEL_DEBUG, "ZIP: file '%s' in archive (start=%i - len=%i - last_mod=%i)", suffix, entry.file_start, entry.file_len, entry.last_mod);
+          return ZipItemImplPtr(new ZipItemImpl(fs->open(prefix, "r", false), entry.file_start, entry.file_len, entry.last_mod));
         }
       }
       return ZipReadFileImplPtr();    // return an error
@@ -424,12 +452,13 @@ FileImplPtr ZipReadFSImpl::open(const char* path, const char* mode, const bool c
     }
   } else {
     // simple file, do nothing
-    return ZipReadFileImplPtr(new ZipReadFileImpl((*_fs)->open(path, mode, create)));
+    return ZipReadFileImplPtr(new ZipReadFileImpl(fs->open(path, mode, create)));
   }
 }
 
 bool ZipReadFSImpl::exists(const char* path) {
-  if (*_fs == nullptr) { return false; }
+  FS * fs = getFS(path);
+  if (fs == nullptr) { return false; }
 
   if (strchr(path, '#')) {
     // treat as a ZIP archive
@@ -441,7 +470,7 @@ bool ZipReadFSImpl::exists(const char* path) {
     char *prefix = strtok_r(sub_path, "#", &tok);
     char *suffix = strtok_r(NULL, "", &tok);
     // parse ZIP archive
-    File zipfile = (*_fs)->open(prefix, "r", false);
+    File zipfile = fs->open(prefix, "r", false);
     if ((bool)zipfile) {
       // we could read the file
       ZipArchive zip_archive = ZipArchive(&zipfile);
@@ -456,7 +485,7 @@ bool ZipReadFSImpl::exists(const char* path) {
     return false;
   } else {
     // simple file, do nothing
-    return (*_fs)->exists(path);
+    return fs->exists(path);
   }
 }
 

@@ -11,17 +11,16 @@
  *  Created on: Jul 1, 2017
  *      Author: kolban
  */
-#include "sdkconfig.h"
-#if defined(CONFIG_BT_ENABLED)
 
 #include "nimconfig.h"
-#if defined(CONFIG_BT_NIMBLE_ROLE_OBSERVER)
+#if defined(CONFIG_BT_ENABLED) && defined(CONFIG_BT_NIMBLE_ROLE_OBSERVER)
 
 #include "NimBLEScan.h"
 #include "NimBLEDevice.h"
 #include "NimBLELog.h"
 
 #include <string>
+#include <climits>
 
 static const char* LOG_TAG = "NimBLEScan";
 
@@ -284,7 +283,7 @@ bool NimBLEScan::isScanning() {
  * @return True if scan started or false if there was an error.
  */
 bool NimBLEScan::start(uint32_t duration, void (*scanCompleteCB)(NimBLEScanResults), bool is_continue) {
-    NIMBLE_LOGD(LOG_TAG, ">> start(duration=%d)", duration);
+    NIMBLE_LOGD(LOG_TAG, ">> start: duration=%" PRIu32, duration);
 
     // Save the callback to be invoked when the scan completes.
     m_scanCompleteCB = scanCompleteCB;
@@ -358,10 +357,15 @@ NimBLEScanResults NimBLEScan::start(uint32_t duration, bool is_continue) {
         NIMBLE_LOGW(LOG_TAG, "Blocking scan called with duration = forever");
     }
 
-    ble_task_data_t taskData = {nullptr, xTaskGetCurrentTaskHandle(),0, nullptr};
+    TaskHandle_t cur_task = xTaskGetCurrentTaskHandle();
+    ble_task_data_t taskData = {nullptr, cur_task, 0, nullptr};
     m_pTaskData = &taskData;
 
     if(start(duration, nullptr, is_continue)) {
+#ifdef ulTaskNotifyValueClear
+        // Clear the task notification value to ensure we block
+        ulTaskNotifyValueClear(cur_task, ULONG_MAX);
+#endif
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     }
 
@@ -534,5 +538,4 @@ NimBLEAdvertisedDevice *NimBLEScanResults::getDevice(const NimBLEAddress &addres
     return nullptr;
 }
 
-#endif // #if defined(CONFIG_BT_NIMBLE_ROLE_OBSERVER)
-#endif /* CONFIG_BT_ENABLED */
+#endif /* CONFIG_BT_ENABLED && CONFIG_BT_NIMBLE_ROLE_OBSERVER */

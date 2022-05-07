@@ -30,9 +30,8 @@ const char berry_prog[] =
 #ifdef USE_BERRY_PYTHON_COMPAT
   // enable python syntax compatibility mode
   "import python_compat "
+  "import cb "
 #endif
-  // persistance module
-  "import persist "
 
 #ifdef USE_ENERGY_SENSOR
   "import energy "
@@ -48,10 +47,9 @@ const char berry_prog[] =
   "import autoconf "
 #endif // USE_AUTOCONF
 
-  "import tapp "
-
 #ifdef USE_LVGL
   "import lv "
+  "import lv_tasmota "
   // create the '_lvgl' global singleton
   "_lvgl = LVGL_glob() "
 
@@ -70,6 +68,17 @@ const char berry_prog[] =
 #ifdef USE_LIGHT
   "import light "
 #endif // USE_LIGHT
+
+#if defined(USE_EMULATION) && defined(USE_EMULATION_HUE)
+  "import hue_bridge "
+#endif
+
+  "import tapp "
+
+#ifdef USE_BERRY_DEBUG
+  "import debug "
+  "import solidify "
+#endif
   ;
 
 #endif  // USE_BERRY

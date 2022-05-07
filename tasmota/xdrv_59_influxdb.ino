@@ -37,8 +37,9 @@
  * IfxBucket   - Set Influxdb v2 and bucket name
  * IfxOrg      - Set Influxdb v2 and organization
  * IfxToken    - Set Influxdb v2 and token
- *
- * Set influxdb update interval with command teleperiod
+ * IfxPeriod   - Set Influxdb period. If not set (or 0), use Teleperiod
+ * IfxSensor   - Set Influxdb sensor logging off (0) or on (1)
+ * IfxRP       - Set Influxdb retention policy
  *
  * The following triggers result in automatic influxdb numeric feeds without appended time:
  * - this driver initiated state message
@@ -70,6 +71,9 @@
 #endif
 #ifndef INFLUXDB_BUCKET
 #define INFLUXDB_BUCKET    "db"          // [IfxDatabase, IfxBucket] Influxdb v1 database or v2 bucket
+#endif
+#ifndef INFLUXDB_RP
+#define INFLUXDB_RP        ""          // [IfxRP] Influxdb v1 retention policy (blank is default, usually autogen infinite)
 #endif
 
 static const char UninitializedMessage[] PROGMEM = "Unconfigured instance";
@@ -130,6 +134,10 @@ bool InfluxDbParameterInit(void) {
     IFDB._writeUrl += "/write?db=";
     IFDB._writeUrl += UrlEncode(SettingsText(SET_INFLUXDB_BUCKET));
     IFDB._writeUrl += InfluxDbAuth();
+    if (strlen(SettingsText(SET_INFLUXDB_RP)) != 0) {
+      IFDB._writeUrl += "&rp=";
+      IFDB._writeUrl += UrlEncode(SettingsText(SET_INFLUXDB_RP));
+    }
   }
   AddLog(LOG_LEVEL_DEBUG, PSTR("IFX: Url %s"), IFDB._writeUrl.c_str());
 
@@ -256,15 +264,19 @@ char* InfluxDbNumber(char* alternative, JsonParserToken value) {
   return nullptr;
 }
 
-void InfluxDbProcessJson(void) {
+void InfluxDbProcessJson(bool use_copy = false) {
   if (!IFDB.init) { return; }
 
-  AddLog(IFDB.log_level, PSTR("IFX: Process %s"), ResponseData());
+  char *json_data = ResponseData();
+  if (use_copy) {
+    json_data = (char*)malloc(ResponseSize()+2);
+    if (!json_data) { return; }
+    strlcpy(json_data, ResponseData(), ResponseSize());
+  }
 
-//  String jsonStr = ResponseData();  // Make a copy before use
-//  JsonParser parser((char *)jsonStr.c_str());
-  JsonParser parser((char *)ResponseData());  // Destroys ResponseData but saves heap space
+  AddLog(IFDB.log_level, PSTR("IFX: Process %s"), json_data);
 
+  JsonParser parser(json_data);  // Destroys json_data
   JsonParserObject root = parser.getRootObject();
   if (root) {
     char number[12];     // '1' to '255'
@@ -354,6 +366,16 @@ void InfluxDbProcessJson(void) {
       InfluxDbPostData(data.c_str());
     }
   }
+
+  if (use_copy) {
+    free(json_data);
+  }
+}
+
+void InfluxDbProcess(bool use_copy) {
+  if (Settings->sbflag1.influxdb_sensor) {
+    InfluxDbProcessJson(use_copy);
+  }
 }
 
 void InfluxDbPublishPowerState(uint32_t device) {
@@ -364,8 +386,9 @@ void InfluxDbPublishPowerState(uint32_t device) {
 void InfluxDbLoop(void) {
   if (!TasmotaGlobal.global_state.network_down) {
     IFDB.interval--;
-    if (IFDB.interval <= 0 || IFDB.interval > Settings->tele_period) {
-      IFDB.interval = Settings->tele_period;
+    uint16_t period = Settings->influxdb_period ? Settings->influxdb_period : Settings->tele_period;
+    if (IFDB.interval <= 0 || IFDB.interval > period) {
+      IFDB.interval = period;
       if (!IFDB.init) {
         if (InfluxDbParameterInit()) {
           IFDB.init = InfluxDbValidateConnection();
@@ -385,7 +408,7 @@ void InfluxDbLoop(void) {
 
         // {"Time":"2021-08-14T17:19:33","Switch1":"ON","Switch2":"OFF","ANALOG":{"Temperature":184.72},"DS18B20":{"Id":"01144A0CB2AA","Temperature":27.50},"HTU21":{"Temperature":28.23,"Humidity":39.7,"DewPoint":13.20},"Global":{"Temperature":27.50,"Humidity":39.7,"DewPoint":12.55},"TempUnit":"C"}
         ResponseClear();
-        if (MqttShowSensor()) {   // Pull sensor data
+        if (MqttShowSensor(true)) {   // Pull sensor data
           InfluxDbProcessJson();
         };
 
@@ -408,20 +431,25 @@ void InfluxDbLoop(void) {
 #define D_CMND_INFLUXDBTOKEN    "Token"
 #define D_CMND_INFLUXDBDATABASE "Database"
 #define D_CMND_INFLUXDBBUCKET   "Bucket"
+#define D_CMND_INFLUXDBPERIOD   "Period"
+#define D_CMND_INFLUXDBSENSOR   "Sensor"
+#define D_CMND_INFLUXDBRP "RP"
 
 const char kInfluxDbCommands[] PROGMEM = D_PRFX_INFLUXDB "|"  // Prefix
   "|" D_CMND_INFLUXDBLOG "|"
   D_CMND_INFLUXDBHOST "|" D_CMND_INFLUXDBPORT "|"
   D_CMND_INFLUXDBUSER "|" D_CMND_INFLUXDBORG "|"
   D_CMND_INFLUXDBPASSWORD "|" D_CMND_INFLUXDBTOKEN "|"
-  D_CMND_INFLUXDBDATABASE "|" D_CMND_INFLUXDBBUCKET;
+  D_CMND_INFLUXDBDATABASE "|" D_CMND_INFLUXDBBUCKET "|"
+  D_CMND_INFLUXDBPERIOD "|" D_CMND_INFLUXDBSENSOR "|" D_CMND_INFLUXDBRP;
 
 void (* const InfluxCommand[])(void) PROGMEM = {
   &CmndInfluxDbState, &CmndInfluxDbLog,
   &CmndInfluxDbHost, &CmndInfluxDbPort,
   &CmndInfluxDbUser, &CmndInfluxDbUser,
   &CmndInfluxDbPassword, &CmndInfluxDbPassword,
-  &CmndInfluxDbDatabase, &CmndInfluxDbDatabase };
+  &CmndInfluxDbDatabase, &CmndInfluxDbDatabase,
+  &CmndInfluxDbPeriod, &CmndInfluxDbSensor, &CmndInfluxDbRP };
 
 void InfluxDbReinit(void) {
   IFDB.init = false;
@@ -444,6 +472,13 @@ void CmndInfluxDbState(void) {
     ResponseAppend_P(PSTR(",\"" D_CMND_INFLUXDBBUCKET "\":\"%s\",\"" D_CMND_INFLUXDBORG "\":\"%s\"}}"),
       SettingsText(SET_INFLUXDB_BUCKET), SettingsText(SET_INFLUXDB_ORG));
   }
+}
+
+void CmndInfluxDbSensor(void) {
+  if ((XdrvMailbox.payload >= 0) && (XdrvMailbox.payload <= 1)) {
+    Settings->sbflag1.influxdb_sensor = XdrvMailbox.payload;
+  }
+  ResponseCmndStateText(Settings->sbflag1.influxdb_sensor);
 }
 
 void CmndInfluxDbLog(void) {
@@ -504,6 +539,24 @@ void CmndInfluxDbDatabase(void) {
   ResponseCmndChar(SettingsText(SET_INFLUXDB_BUCKET));
 }
 
+void CmndInfluxDbRP(void) {
+  if (XdrvMailbox.data_len > 0) {
+    SettingsUpdateText(SET_INFLUXDB_RP, (SC_CLEAR == Shortcut()) ? "" : (SC_DEFAULT == Shortcut()) ? PSTR(INFLUXDB_RP) : XdrvMailbox.data);
+    InfluxDbReinit();
+  }
+  ResponseCmndChar(SettingsText(SET_INFLUXDB_RP));
+}
+
+void CmndInfluxDbPeriod(void) {
+  if ((XdrvMailbox.payload >= 0) && (XdrvMailbox.payload < 3601)) {
+    Settings->influxdb_period = XdrvMailbox.payload;
+    if(Settings->influxdb_period > 0 && Settings->influxdb_period < 10) {
+      Settings->influxdb_period = 10;
+    }
+  }
+  ResponseCmndNumber(Settings->influxdb_period);
+}
+
 /*********************************************************************************************\
  * Interface
 \*********************************************************************************************/
@@ -521,6 +574,7 @@ bool Xdrv59(uint8_t function) {
       SettingsUpdateText(SET_INFLUXDB_ORG, PSTR(INFLUXDB_ORG));
       SettingsUpdateText(SET_INFLUXDB_TOKEN, PSTR(INFLUXDB_TOKEN));
       SettingsUpdateText(SET_INFLUXDB_BUCKET, PSTR(INFLUXDB_BUCKET));
+      SettingsUpdateText(SET_INFLUXDB_RP, PSTR(INFLUXDB_RP));
       Settings->sbflag1.influxdb_default = 1;
     }
   } else if (FUNC_COMMAND == function) {

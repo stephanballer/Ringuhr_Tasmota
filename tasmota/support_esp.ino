@@ -45,6 +45,10 @@ uint32_t ESP_getChipId(void) {
   return ESP.getChipId();
 }
 
+uint32_t ESP_getFreeSketchSpace(void) {
+  return ESP.getFreeSketchSpace();
+}
+
 uint32_t ESP_getSketchSize(void) {
   return ESP.getSketchSize();
 }
@@ -95,6 +99,11 @@ String GetDeviceHardware(void) {
   return F("ESP8266EX");
 }
 
+String GetDeviceHardwareRevision(void) {
+  // No known revisions for ESP8266/85
+  return GetDeviceHardware();
+}
+
 #endif
 
 /*********************************************************************************************\
@@ -126,6 +135,8 @@ String GetDeviceHardware(void) {
     #include "esp32/rom/rtc.h"
   #elif CONFIG_IDF_TARGET_ESP32S2  // ESP32-S2
     #include "esp32s2/rom/rtc.h"
+  #elif CONFIG_IDF_TARGET_ESP32S3  // ESP32-S3
+    #include "esp32s3/rom/rtc.h"
   #elif CONFIG_IDF_TARGET_ESP32C3  // ESP32-C3
     #include "esp32c3/rom/rtc.h"
   #else
@@ -135,36 +146,51 @@ String GetDeviceHardware(void) {
   #include "rom/rtc.h"
 #endif
 
+// Set the Stacksize for Arduino core. Default is 8192, some builds may need a bigger one
+size_t getArduinoLoopTaskStackSize(void) {
+    return SET_ESP32_STACK_SIZE;
+}
+
+
 #include <esp_phy_init.h>
 
-void NvmLoad(const char *sNvsName, const char *sName, void *pSettings, unsigned nSettingsLen) {
-  nvs_handle handle;
-  noInterrupts();
-  nvs_open(sNvsName, NVS_READONLY, &handle);
+bool NvmLoad(const char *sNvsName, const char *sName, void *pSettings, unsigned nSettingsLen) {
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(sNvsName, NVS_READONLY, &handle);
+  if (result != ESP_OK) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("NVS: Error %d"), result);
+    return false;
+  }
   size_t size = nSettingsLen;
   nvs_get_blob(handle, sName, pSettings, &size);
   nvs_close(handle);
-  interrupts();
+  return true;
 }
 
 void NvmSave(const char *sNvsName, const char *sName, const void *pSettings, unsigned nSettingsLen) {
-  nvs_handle handle;
-  noInterrupts();
-  nvs_open(sNvsName, NVS_READWRITE, &handle);
-  nvs_set_blob(handle, sName, pSettings, nSettingsLen);
-  nvs_commit(handle);
-  nvs_close(handle);
-  interrupts();
+#ifdef USE_WEBCAM
+  WcInterrupt(0);  // Stop stream if active to fix TG1WDT_SYS_RESET
+#endif
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(sNvsName, NVS_READWRITE, &handle);
+  if (result != ESP_OK) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("NVS: Error %d"), result);
+  } else {
+    nvs_set_blob(handle, sName, pSettings, nSettingsLen);
+    nvs_commit(handle);
+    nvs_close(handle);
+  }
+#ifdef USE_WEBCAM
+  WcInterrupt(1);
+#endif
 }
 
 int32_t NvmErase(const char *sNvsName) {
-  nvs_handle handle;
-  noInterrupts();
+  nvs_handle_t handle;
   int32_t result = nvs_open(sNvsName, NVS_READWRITE, &handle);
   if (ESP_OK == result) { result = nvs_erase_all(handle); }
   if (ESP_OK == result) { result = nvs_commit(handle); }
   nvs_close(handle);
-  interrupts();
   return result;
 }
 
@@ -208,16 +234,15 @@ void SettingsErase(uint8_t type) {
 }
 
 uint32_t SettingsRead(void *data, size_t size) {
-  uint32_t source = 1;
 #ifdef USE_UFILESYS
-  if (!TfsLoadFile(TASM_FILE_SETTINGS, (uint8_t*)data, size)) {
-#endif
-    source = 0;
-    NvmLoad("main", "Settings", data, size);
-#ifdef USE_UFILESYS
+  if (TfsLoadFile(TASM_FILE_SETTINGS, (uint8_t*)data, size)) {
+    return 2;
   }
 #endif
-  return source;
+  if (NvmLoad("main", "Settings", data, size)) {
+    return 1;
+  };
+  return 0;
 }
 
 void SettingsWrite(const void *pSettings, unsigned nSettingsLen) {
@@ -263,6 +288,8 @@ extern "C" {
     #include "esp32/rom/spi_flash.h"
   #elif CONFIG_IDF_TARGET_ESP32S2   // ESP32-S2
     #include "esp32s2/rom/spi_flash.h"
+  #elif CONFIG_IDF_TARGET_ESP32S3   // ESP32-S3
+    #include "esp32s3/rom/spi_flash.h"
   #elif CONFIG_IDF_TARGET_ESP32C3   // ESP32-C3
     #include "esp32c3/rom/spi_flash.h"
   #else
@@ -272,14 +299,54 @@ extern "C" {
   #include "rom/spi_flash.h"
 #endif
 
+bool EspSingleOtaPartition(void) {
+  return (1 == esp_ota_get_app_partition_count());
+}
+
+uint32_t EspRunningFactoryPartition(void) {
+  const esp_partition_t *cur_part = esp_ota_get_running_partition();
+//  return (cur_part->type == 0 && cur_part->subtype == 0);
+  if (cur_part->type == 0 && cur_part->subtype == 0) {
+    return cur_part->size;
+  }
+  return 0;
+}
+
+void EspPrepRestartToSafeBoot(void) {
+  const esp_partition_t *otadata_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
+  if (otadata_partition) {
+    esp_partition_erase_range(otadata_partition, 0, SPI_FLASH_SEC_SIZE * 2);
+  }
+}
+
+bool EspPrepSwitchToOtherPartition(void) {
+  bool valid = EspSingleOtaPartition();
+  if (valid) {
+    bool running_factory = EspRunningFactoryPartition();
+    if (!running_factory) {
+      EspPrepRestartToSafeBoot();
+    } else {
+      const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
+      esp_ota_set_boot_partition(partition);
+    }
+  }
+  return valid;
+}
+
 uint32_t EspFlashBaseAddress(void) {
-  const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
-  if (!partition) { return 0; }
-  return partition->address;  // For tasmota 0x00010000 or 0x00200000
+  if (EspSingleOtaPartition()) {       // Only one partition so start at end of sketch
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) { return 0; }
+    return running->address + ESP_getSketchSize();
+  } else {                     // Select other partition
+    const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
+    if (!partition) { return 0; }
+    return partition->address;  // For tasmota 0x00010000 or 0x00200000
+  }
 }
 
 uint32_t EspFlashBaseEndAddress(void) {
-  const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
+  const esp_partition_t* partition = (EspSingleOtaPartition()) ? esp_ota_get_running_partition() : esp_ota_get_next_update_partition(nullptr);
   if (!partition) { return 0; }
   return partition->address + partition->size;  // For tasmota 0x00200000 or 0x003F0000
 }
@@ -364,6 +431,10 @@ String ESP32GetResetReason(uint32_t cpu_no) {
     case 17 : return F("Time Group1 reset CPU");                            // 17  -                 TG1WDT_CPU_RESET
     case 18 : return F("Super watchdog reset digital core and rtc module"); // 18  -                 SUPER_WDT_RESET
     case 19 : return F("Glitch reset digital core and rtc module");         // 19  -                 GLITCH_RTC_RESET
+    case 20 : return F("Efuse reset digital core");                         // 20                    EFUSE_RESET
+    case 21 : return F("Usb uart reset digital core");                      // 21                    USB_UART_CHIP_RESET
+    case 22 : return F("Usb jtag reset digital core");                      // 22                    USB_JTAG_CHIP_RESET
+    case 23 : return F("Power glitch reset digital core and rtc module");   // 23                    POWER_GLITCH_RESET
   }
 
   return F("No meaning");                                                   // 0 and undefined
@@ -397,6 +468,17 @@ uint32_t ESP_getSketchSize(void) {
     sketchsize = ESP.getSketchSize();  // This takes almost 2 seconds on an ESP32
   }
   return sketchsize;
+}
+
+uint32_t ESP_getFreeSketchSpace(void) {
+  if (EspSingleOtaPartition()) {
+    uint32_t size = EspRunningFactoryPartition();
+    if (!size) {
+      size = ESP.getFreeSketchSpace();
+    }
+    return size - ESP_getSketchSize();
+  }
+  return ESP.getFreeSketchSpace();
 }
 
 uint32_t ESP_getFreeHeap(void) {
@@ -489,6 +571,11 @@ void *special_calloc(size_t num, size_t size) {
   }
 }
 
+// Variants for IRAM heap, which need all accesses to be 32 bits aligned
+void *special_malloc32(uint32_t size) {
+  return heap_caps_malloc(size, MALLOC_CAP_32BIT);
+}
+
 float CpuTemperature(void) {
 #ifdef CONFIG_IDF_TARGET_ESP32
   return (float)temperatureRead();  // In Celsius
@@ -499,12 +586,16 @@ float CpuTemperature(void) {
   return t;
 */
 #else
-  // Currently (20210801) repeated calls to temperatureRead() on ESP32C3 and ESP32S2 result in IDF error messages
-  static float t = NAN;
-  if (isnan(t)) {
-    t = (float)temperatureRead();  // In Celsius
-  }
-  return t;
+  #ifndef CONFIG_IDF_TARGET_ESP32S3
+    // Currently (20210801) repeated calls to temperatureRead() on ESP32C3 and ESP32S2 result in IDF error messages
+    static float t = NAN;
+    if (isnan(t)) {
+      t = (float)temperatureRead();  // In Celsius
+    }
+    return t;
+  #else
+    return NAN;
+  #endif
 #endif
 }
 
@@ -551,6 +642,8 @@ float CpuTemperature(void) {
 #endif
 */
 
+// #include "esp_chip_info.h"
+
 String GetDeviceHardware(void) {
   // https://www.espressif.com/en/products/socs
 
@@ -558,10 +651,12 @@ String GetDeviceHardware(void) {
 Source: esp-idf esp_system.h and esptool
 
 typedef enum {
-    CHIP_ESP32   = 1,  //!< ESP32
-    CHIP_ESP32S2 = 2,  //!< ESP32-S2
-    CHIP_ESP32S3 = 4,  //!< ESP32-S3
-    CHIP_ESP32C3 = 5,  //!< ESP32-C3
+    CHIP_ESP32  = 1, //!< ESP32
+    CHIP_ESP32S2 = 2, //!< ESP32-S2
+    CHIP_ESP32S3 = 9, //!< ESP32-S3
+    CHIP_ESP32C3 = 5, //!< ESP32-C3
+    CHIP_ESP32H2 = 6, //!< ESP32-H2
+    CHIP_ESP32C2 = 12, //!< ESP32-C2
 } esp_chip_model_t;
 
 // Chip feature flags, used in esp_chip_info_t
@@ -569,6 +664,9 @@ typedef enum {
 #define CHIP_FEATURE_WIFI_BGN       BIT(1)      //!< Chip has 2.4GHz WiFi
 #define CHIP_FEATURE_BLE            BIT(4)      //!< Chip has Bluetooth LE
 #define CHIP_FEATURE_BT             BIT(5)      //!< Chip has Bluetooth Classic
+#define CHIP_FEATURE_IEEE802154     BIT(6)      //!< Chip has IEEE 802.15.4
+#define CHIP_FEATURE_EMB_PSRAM      BIT(7)      //!< Chip has embedded psram
+
 
 // The structure represents information about the chip
 typedef struct {
@@ -621,6 +719,7 @@ typedef struct {
         if (rev3)        { return F("ESP32-PICO-V3"); }    // Max 240MHz, Dual core, LGA 7*7, ESP32-PICO-V3-ZERO, ESP32-PICO-V3-ZERO-DevKit
         else {             return F("ESP32-PICO-D4"); }    // Max 240MHz, Dual core, LGA 7*7, 4MB embedded flash, ESP32-PICO-KIT
       case 6:              return F("ESP32-PICO-V3-02");   // Max 240MHz, Dual core, LGA 7*7, 8MB embedded flash, 2MB embedded PSRAM, ESP32-PICO-MINI-02, ESP32-PICO-DevKitM-2
+      case 7:              return F("ESP32-D0WDR2-V3");    // Max 240MHz, Dual core, QFN 5*5, ESP32-WROOM-32E, ESP32_WROVER-E, ESP32-DevKitC
     }
 #endif  // CONFIG_IDF_TARGET_ESP32
     return F("ESP32");
@@ -628,16 +727,23 @@ typedef struct {
   else if (2 == chip_model) {  // ESP32-S2
 #ifdef CONFIG_IDF_TARGET_ESP32S2
 /* esptool:
-    def get_pkg_version(self):
+    def get_flash_version(self):
         num_word = 3
         block1_addr = self.EFUSE_BASE + 0x044
         word3 = self.read_reg(block1_addr + (4 * num_word))
         pkg_version = (word3 >> 21) & 0x0F
         return pkg_version
+
+    def get_psram_version(self):
+        num_word = 3
+        block1_addr = self.EFUSE_BASE + 0x044
+        word3 = self.read_reg(block1_addr + (4 * num_word))
+        pkg_version = (word3 >> 28) & 0x0F
+        return pkg_version
 */
-    uint32_t chip_ver = REG_GET_FIELD(EFUSE_RD_MAC_SPI_SYS_3_REG, EFUSE_PKG_VERSION);
-    uint32_t pkg_version = chip_ver & 0x7;
-//    uint32_t pkg_version = esp_efuse_get_pkg_ver();
+    uint32_t chip_ver = REG_GET_FIELD(EFUSE_RD_MAC_SPI_SYS_3_REG, EFUSE_FLASH_VERSION);
+    uint32_t psram_ver = REG_GET_FIELD(EFUSE_RD_MAC_SPI_SYS_3_REG, EFUSE_PSRAM_VERSION);
+    uint32_t pkg_version = (chip_ver & 0xF) + ((psram_ver & 0xF) * 100);
 
 //    AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("HDW: ESP32 Model %d, Revision %d, Core %d, Package %d"), chip_info.model, chip_revision, chip_info.cores, chip_ver);
 
@@ -646,11 +752,16 @@ typedef struct {
       case 1:              return F("ESP32-S2FH2");        // Max 240MHz, Single core, QFN 7*7, 2MB embedded flash, ESP32-S2-MINI-1, ESP32-S2-DevKitM-1
       case 2:              return F("ESP32-S2FH4");        // Max 240MHz, Single core, QFN 7*7, 4MB embedded flash
       case 3:              return F("ESP32-S2FN4R2");      // Max 240MHz, Single core, QFN 7*7, 4MB embedded flash, 2MB embedded PSRAM, , ESP32-S2-MINI-1U, ESP32-S2-DevKitM-1U
+      case 100:            return F("ESP32-S2R2");
+      case 102:            return F("ESP32-S2FNR2");       // Max 240MHz, Single core, QFN 7*7, 4MB embedded flash, 2MB embedded PSRAM, , Lolin S2 mini
     }
 #endif  // CONFIG_IDF_TARGET_ESP32S2
     return F("ESP32-S2");
   }
-  else if (4 == chip_model) {  // ESP32-S3
+  else if (9 == chip_model) {  // ESP32-S3
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+    // no variants for now
+#endif  // CONFIG_IDF_TARGET_ESP32S3
     return F("ESP32-S3");                                  // Max 240MHz, Dual core, QFN 7*7, ESP32-S3-WROOM-1, ESP32-S3-DevKitC-1
   }
   else if (5 == chip_model) {  // ESP32-C3
@@ -724,6 +835,24 @@ typedef struct {
     return F("ESP32-H2");
   }
   return F("ESP32");
+}
+
+String GetDeviceHardwareRevision(void) {
+  // ESP32-S2
+  // ESP32-D0WDQ6 rev.1
+  // ESP32-C3 rev.2
+  // ESP32-C3 rev.3
+  String result = GetDeviceHardware();   // ESP32-C3
+
+  esp_chip_info_t chip_info;
+  esp_chip_info(&chip_info);
+  char revision[10] = { 0 };
+  if (chip_info.revision) {
+    snprintf_P(revision, sizeof(revision), PSTR(" rev.%d"), chip_info.revision);
+  }
+  result += revision;                    // ESP32-C3 rev.3
+
+  return result;
 }
 
 /*

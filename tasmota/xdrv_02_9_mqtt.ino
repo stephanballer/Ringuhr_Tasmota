@@ -45,14 +45,15 @@ WiFiClient EspClient;                     // Wifi Client - non-TLS
 #endif  // USE_MQTT_AZURE_IOT
 
 const char kMqttCommands[] PROGMEM = "|"  // No prefix
+#ifndef FIRMWARE_MINIMAL_ONLY
   // SetOption synonyms
   D_SO_MQTTJSONONLY "|"
 #ifdef USE_MQTT_TLS
-  D_SO_MQTTTLS "|"
+  D_SO_MQTTTLS "|" D_SO_MQTTTLS_FINGERPRINT "|"
 #endif
   D_SO_MQTTNORETAIN "|" D_SO_MQTTDETACHRELAY "|"
   // regular commands
-#if defined(USE_MQTT_TLS) && !defined(USE_MQTT_TLS_CA_CERT)
+#if defined(USE_MQTT_TLS)
   D_CMND_MQTTFINGERPRINT "|"
 #endif
   D_CMND_MQTTUSER "|" D_CMND_MQTTPASSWORD "|" D_CMND_MQTTKEEPALIVE "|" D_CMND_MQTTTIMEOUT "|" D_CMND_MQTTWIFITIMEOUT "|"
@@ -65,23 +66,21 @@ const char kMqttCommands[] PROGMEM = "|"  // No prefix
   D_CMND_MQTTHOST "|" D_CMND_MQTTPORT "|" D_CMND_MQTTRETRY "|" D_CMND_STATETEXT "|" D_CMND_MQTTCLIENT "|"
   D_CMND_FULLTOPIC "|" D_CMND_PREFIX "|" D_CMND_GROUPTOPIC "|" D_CMND_TOPIC "|" D_CMND_PUBLISH "|" D_CMND_MQTTLOG "|"
   D_CMND_BUTTONTOPIC "|" D_CMND_SWITCHTOPIC "|" D_CMND_BUTTONRETAIN "|" D_CMND_SWITCHRETAIN "|" D_CMND_POWERRETAIN "|"
-  D_CMND_SENSORRETAIN "|" D_CMND_INFORETAIN "|" D_CMND_STATERETAIN ;
+  D_CMND_SENSORRETAIN "|" D_CMND_INFORETAIN "|" D_CMND_STATERETAIN
+#endif  // FIRMWARE_MINIMAL_ONLY
+  ;
 
 SO_SYNONYMS(kMqttSynonyms,
   90,
 #ifdef USE_MQTT_TLS
-  103,
+  103, 132,
 #endif
   104, 114
 );
 
-// const uint8_t kMqttSynonyms[] PROGMEM = {
-//   4,  // number of synonyms
-//   90, 103, 104, 114,
-// };
-
 void (* const MqttCommand[])(void) PROGMEM = {
-#if defined(USE_MQTT_TLS) && !defined(USE_MQTT_TLS_CA_CERT)
+#ifndef FIRMWARE_MINIMAL_ONLY
+#if defined(USE_MQTT_TLS)
   &CmndMqttFingerprint,
 #endif
   &CmndMqttUser, &CmndMqttPassword, &CmndMqttKeepAlive, &CmndMqttTimeout, &CmndMqttWifiTimeout,
@@ -94,7 +93,9 @@ void (* const MqttCommand[])(void) PROGMEM = {
   &CmndMqttHost, &CmndMqttPort, &CmndMqttRetry, &CmndStateText, &CmndMqttClient,
   &CmndFullTopic, &CmndPrefix, &CmndGroupTopic, &CmndTopic, &CmndPublish, &CmndMqttlog,
   &CmndButtonTopic, &CmndSwitchTopic, &CmndButtonRetain, &CmndSwitchRetain, &CmndPowerRetain, &CmndSensorRetain,
-  &CmndInfoRetain, &CmndStateRetain };
+  &CmndInfoRetain, &CmndStateRetain
+#endif  // FIRMWARE_MINIMAL_ONLY
+  };
 
 struct MQTT {
   uint16_t connect_count = 0;            // MQTT re-connect count
@@ -193,10 +194,14 @@ void MqttDisableLogging(bool state) {
 PubSubClient MqttClient;
 
 void MqttInit(void) {
+  // Force buffer size since the #define may not be visible from Arduino lib
+  MqttClient.setBufferSize(MQTT_MAX_PACKET_SIZE);
+
 #ifdef USE_MQTT_AZURE_IOT
   Settings->mqtt_port = 8883;
 #endif //USE_MQTT_AZURE_IOT
 #ifdef USE_MQTT_TLS
+  bool aws_iot_host = false;
   if ((8883 == Settings->mqtt_port) || (8884 == Settings->mqtt_port) || (443 == Settings->mqtt_port)) {
     // Turn on TLS for port 8883 (TLS), 8884 (TLS, client certificate), 443 (TLS, user/password)
     Settings->flag4.mqtt_tls = true;
@@ -207,21 +212,24 @@ void MqttInit(void) {
   String host = String(SettingsText(SET_MQTT_HOST));
   if (host.indexOf(F(".iot.")) && host.endsWith(F(".amazonaws.com"))) {  // look for ".iot." and ".amazonaws.com" in the domain name
     Settings->flag4.mqtt_no_retain = true;
+    aws_iot_host = true;
   }
 
   if (Mqtt.mqtt_tls) {
 #ifdef ESP32
+  #if MQTT_MAX_PACKET_SIZE > 2000
+    tlsClient = new BearSSL::WiFiClientSecure_light(4096,4096);
+  #else
     tlsClient = new BearSSL::WiFiClientSecure_light(2048,2048);
+  #endif
 #else // ESP32 - ESP8266
     tlsClient = new BearSSL::WiFiClientSecure_light(1024,1024);
 #endif
 
-#ifdef USE_MQTT_AWS_IOT_LIGHT
-    if (443 == Settings->mqtt_port) {
+    if (443 == Settings->mqtt_port && aws_iot_host) {
       static const char * alpn_mqtt = "mqtt";   // needs to be static
       tlsClient->setALPN(&alpn_mqtt, 1);         // need to set alpn to 'mqtt' for AWS IoT
     }
-#endif
 #ifdef USE_MQTT_AWS_IOT
     loadTlsDir();   // load key and certificate data from Flash
     if ((nullptr != AWS_IoT_Private_Key) && (nullptr != AWS_IoT_Client_Certificate)) {
@@ -231,9 +239,9 @@ void MqttInit(void) {
     }
 #endif
 
-#ifdef USE_MQTT_TLS_CA_CERT
-    tlsClient->setTrustAnchor(Tasmota_TA, nitems(Tasmota_TA));
-#endif // USE_MQTT_TLS_CA_CERT
+    if (!Settings->flag5.tls_use_fingerprint) {
+      tlsClient->setTrustAnchor(Tasmota_TA, nitems(Tasmota_TA));
+    }
 
     MqttClient.setClient(*tlsClient);
   } else {
@@ -783,6 +791,9 @@ void MqttPublishPrefixTopicRulesProcess_P(uint32_t prefix, const char* subtopic)
 void MqttPublishTeleSensor(void) {
   // Publish tele/<device>/SENSOR default ResponseData string with optional retained
   //   then process rules
+#ifdef USE_INFLUXDB
+  InfluxDbProcess(1);        // Use a copy of ResponseData
+#endif
   MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR(D_RSLT_SENSOR), Settings->flag.mqtt_sensor_retain);  // CMND_SENSORRETAIN
 }
 
@@ -915,13 +926,22 @@ void MqttConnected(void) {
       MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR(D_RSLT_INFO "1"), Settings->flag5.mqtt_info_retain);
 #ifdef USE_WEBSERVER
       if (Settings->webserver) {
+        Response_P(PSTR("{\"Info2\":{\"" D_JSON_WEBSERVER_MODE "\":\"%s\""),
+          (2 == Settings->webserver) ? PSTR(D_ADMIN) : PSTR(D_USER));
+        if (static_cast<uint32_t>(WiFi.localIP()) != 0) {
+          ResponseAppend_P(PSTR(",\"" D_CMND_HOSTNAME "\":\"%s\",\"" D_CMND_IPADDRESS "\":\"%_I\""),
+            TasmotaGlobal.hostname, (uint32_t)WiFi.localIP());
 #if LWIP_IPV6
-        Response_P(PSTR("{\"Info2\":{\"" D_JSON_WEBSERVER_MODE "\":\"%s\",\"" D_CMND_HOSTNAME "\":\"%s\",\"" D_CMND_IPADDRESS "\":\"%s\",\"IPv6Address\":\"%s\"}}"),
-          (2 == Settings->webserver) ? PSTR(D_ADMIN) : PSTR(D_USER), NetworkHostname(), NetworkAddress().toString().c_str(), WifiGetIPv6().c_str(), Settings->flag5.mqtt_info_retain);
-#else
-        Response_P(PSTR("{\"Info2\":{\"" D_JSON_WEBSERVER_MODE "\":\"%s\",\"" D_CMND_HOSTNAME "\":\"%s\",\"" D_CMND_IPADDRESS "\":\"%s\"}}"),
-          (2 == Settings->webserver) ? PSTR(D_ADMIN) : PSTR(D_USER), NetworkHostname(), NetworkAddress().toString().c_str(), Settings->flag5.mqtt_info_retain);
-#endif // LWIP_IPV6 = 1
+          ResponseAppend_P(PSTR(",\"IPv6Address\":\"%s\""), WifiGetIPv6().c_str());
+#endif  // LWIP_IPV6 = 1
+        }
+#if defined(ESP32) && CONFIG_IDF_TARGET_ESP32 && defined(USE_ETHERNET)
+        if (static_cast<uint32_t>(EthernetLocalIP()) != 0) {
+          ResponseAppend_P(PSTR(",\"Ethernet\":{\"" D_CMND_HOSTNAME "\":\"%s\",\"" D_CMND_IPADDRESS "\":\"%_I\"}"),
+            EthernetHostname(), (uint32_t)EthernetLocalIP());
+        }
+#endif  // USE_ETHERNET
+        ResponseJsonEndEnd();
         MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR(D_RSLT_INFO "2"), Settings->flag5.mqtt_info_retain);
       }
 #endif  // USE_WEBSERVER
@@ -931,7 +951,7 @@ void MqttConnected(void) {
       } else {
         ResponseAppend_P(PSTR("\"%s\""), GetResetReason().c_str());
       }
-      ResponseJsonEndEnd();
+      ResponseAppend_P(PSTR(",\"" D_JSON_BOOTCOUNT "\":%d}}"), Settings->bootcount +1);
       MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR(D_RSLT_INFO "3"), Settings->flag5.mqtt_info_retain);
     }
 
@@ -953,7 +973,7 @@ void MqttConnected(void) {
 void MqttReconnect(void) {
   char stopic[TOPSZ];
 
-  Mqtt.allowed = Settings->flag.mqtt_enabled;  // SetOption3 - Enable MQTT
+  Mqtt.allowed = Settings->flag.mqtt_enabled && (TasmotaGlobal.restart_flag == 0);  // SetOption3 - Enable MQTT, and don't connect if restart in process
   if (Mqtt.allowed) {
 #if defined(USE_MQTT_AZURE_DPS_SCOPEID) && defined(USE_MQTT_AZURE_DPS_PRESHAREDKEY)
   ProvisionAzureDPS();
@@ -1043,11 +1063,11 @@ void MqttReconnect(void) {
   MqttClient.setServer(SettingsText(SET_MQTT_HOST), Settings->mqtt_port);
 
   uint32_t mqtt_connect_time = millis();
-#if defined(USE_MQTT_TLS) && !defined(USE_MQTT_TLS_CA_CERT)
-  bool allow_all_fingerprints;
-  bool learn_fingerprint1;
-  bool learn_fingerprint2;
-  if (Mqtt.mqtt_tls) {
+#if defined(USE_MQTT_TLS)
+  bool allow_all_fingerprints = false;
+  bool learn_fingerprint1 = false;
+  bool learn_fingerprint2 = false;
+  if (Mqtt.mqtt_tls && Settings->flag5.tls_use_fingerprint) {
     allow_all_fingerprints = false;
     learn_fingerprint1 = is_fingerprint_mono_value(Settings->mqtt_fingerprint[0], 0x00);
     learn_fingerprint2 = is_fingerprint_mono_value(Settings->mqtt_fingerprint[1], 0x00);
@@ -1078,9 +1098,9 @@ void MqttReconnect(void) {
   }
 
   String azureMqtt_userString = String(SettingsText(SET_MQTT_HOST)) + "/" + String(SettingsText(SET_MQTT_CLIENT)); + "/?api-version=2018-06-30";
-  if (MqttClient.connect(TasmotaGlobal.mqtt_client, azureMqtt_userString.c_str(), azureMqtt_password.c_str(), stopic, 1, lwt_retain, ResponseData(), MQTT_CLEAN_SESSION)) {
+  if (MqttClient.connect(TasmotaGlobal.mqtt_client, azureMqtt_userString.c_str(), azureMqtt_password.c_str(), stopic, 1, lwt_retain, ResponseData(), Settings->flag5.mqtt_persistent ? 0:1)) {
 #else
-  if (MqttClient.connect(TasmotaGlobal.mqtt_client, mqtt_user, mqtt_pwd, stopic, 1, lwt_retain, ResponseData(), MQTT_CLEAN_SESSION)) {
+  if (MqttClient.connect(TasmotaGlobal.mqtt_client, mqtt_user, mqtt_pwd, stopic, 1, lwt_retain, ResponseData(), Settings->flag5.mqtt_persistent ? 0:1)) {
 #endif  // USE_MQTT_AZURE_IOT
 #ifdef USE_MQTT_TLS
     if (Mqtt.mqtt_tls) {
@@ -1094,35 +1114,37 @@ void MqttReconnect(void) {
       if (!tlsClient->getMFLNStatus()) {
         AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_MQTT "MFLN not supported by TLS server"));
       }
-#ifndef USE_MQTT_TLS_CA_CERT  // don't bother with fingerprints if using CA validation
-      const uint8_t *recv_fingerprint = tlsClient->getRecvPubKeyFingerprint();
-      // create a printable version of the fingerprint received
-      char buf_fingerprint[64];
-      ToHex_P(recv_fingerprint, 20, buf_fingerprint, sizeof(buf_fingerprint), ' ');
-      AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_MQTT "Server fingerprint: %s"), buf_fingerprint);
 
-      bool learned = false;
+      if (Settings->flag5.tls_use_fingerprint) {    // CA validation
+        const uint8_t *recv_fingerprint = tlsClient->getRecvPubKeyFingerprint();
+        // create a printable version of the fingerprint received
+        char buf_fingerprint[64];
+        ToHex_P(recv_fingerprint, 20, buf_fingerprint, sizeof(buf_fingerprint), ' ');
+        AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_MQTT "Server fingerprint: %s"), buf_fingerprint);
 
-      // If the fingerprint slot is marked for update, we'll do so.
-      // Otherwise, if the fingerprint slot had the magic trust-on-first-use
-      // value, we will save the current fingerprint there, but only if the other fingerprint slot
-      // *didn't* match it.
-      if (recv_fingerprint[20] & 0x1 || (learn_fingerprint1 && 0 != memcmp(recv_fingerprint, Settings->mqtt_fingerprint[1], 20))) {
-        memcpy(Settings->mqtt_fingerprint[0], recv_fingerprint, 20);
-        learned = true;
+        bool learned = false;
+
+        // If the fingerprint slot is marked for update, we'll do so.
+        // Otherwise, if the fingerprint slot had the magic trust-on-first-use
+        // value, we will save the current fingerprint there, but only if the other fingerprint slot
+        // *didn't* match it.
+        if (recv_fingerprint[20] & 0x1 || (learn_fingerprint1 && 0 != memcmp(recv_fingerprint, Settings->mqtt_fingerprint[1], 20))) {
+          memcpy(Settings->mqtt_fingerprint[0], recv_fingerprint, 20);
+          learned = true;
+        }
+        // As above, but for the other slot.
+        if (recv_fingerprint[20] & 0x2 || (learn_fingerprint2 && 0 != memcmp(recv_fingerprint, Settings->mqtt_fingerprint[0], 20))) {
+          memcpy(Settings->mqtt_fingerprint[1], recv_fingerprint, 20);
+          learned = true;
+        }
+
+        if (learned) {
+          AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_MQTT "Fingerprint learned: %s"), buf_fingerprint);
+
+          SettingsSaveAll();  // save settings
+        }
       }
-      // As above, but for the other slot.
-      if (recv_fingerprint[20] & 0x2 || (learn_fingerprint2 && 0 != memcmp(recv_fingerprint, Settings->mqtt_fingerprint[0], 20))) {
-        memcpy(Settings->mqtt_fingerprint[1], recv_fingerprint, 20);
-        learned = true;
-      }
 
-      if (learned) {
-        AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_MQTT "Fingerprint learned: %s"), buf_fingerprint);
-
-        SettingsSaveAll();  // save settings
-      }
-#endif // !USE_MQTT_TLS_CA_CERT
     }
 #endif // USE_MQTT_TLS
     MqttConnected();
@@ -1275,7 +1297,7 @@ bool KeyTopicActive(uint32_t key) {
  * Commands
 \*********************************************************************************************/
 
-#if defined(USE_MQTT_TLS) && !defined(USE_MQTT_TLS_CA_CERT)
+#if defined(USE_MQTT_TLS)
 void CmndMqttFingerprint(void) {
   if ((XdrvMailbox.index > 0) && (XdrvMailbox.index <= 2)) {
     char fingerprint[60];
@@ -1408,7 +1430,6 @@ void CmndMqttClient(void) {
 void CmndFullTopic(void) {
   if (XdrvMailbox.data_len > 0) {
     MakeValidMqtt(1, XdrvMailbox.data);
-    if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_client)) { SetShortcutDefault(); }
     char stemp1[TOPSZ];
     strlcpy(stemp1, (SC_DEFAULT == Shortcut()) ? MQTT_FULLTOPIC : XdrvMailbox.data, sizeof(stemp1));
     if (strcmp(stemp1, SettingsText(SET_MQTT_FULLTOPIC))) {
@@ -1463,7 +1484,10 @@ void CmndGroupTopic(void) {
     if (XdrvMailbox.data_len > 0) {
       uint32_t settings_text_index = (1 == XdrvMailbox.index) ? SET_MQTT_GRP_TOPIC : SET_MQTT_GRP_TOPIC2 + XdrvMailbox.index - 2;
       MakeValidMqtt(0, XdrvMailbox.data);
-      if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_client)) { SetShortcutDefault(); }
+      if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_topic)) {
+        AddLog(LOG_LEVEL_INFO, PSTR("MQT: Error: GroupTopic must differ from Topic"));
+        SetShortcutDefault();
+      }
       SettingsUpdateText(settings_text_index, (SC_CLEAR == Shortcut()) ? "" : (SC_DEFAULT == Shortcut()) ? PSTR(MQTT_GRPTOPIC) : XdrvMailbox.data);
 
       // Eliminate duplicates, have at least one and fill from index 1
@@ -1510,7 +1534,6 @@ void CmndGroupTopic(void) {
 void CmndTopic(void) {
   if (!XdrvMailbox.grpflg && (XdrvMailbox.data_len > 0)) {
     MakeValidMqtt(0, XdrvMailbox.data);
-    if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_client)) { SetShortcutDefault(); }
     char stemp1[TOPSZ];
     strlcpy(stemp1, (SC_DEFAULT == Shortcut()) ? MQTT_TOPIC : XdrvMailbox.data, sizeof(stemp1));
     if (strcmp(stemp1, SettingsText(SET_MQTT_TOPIC))) {
@@ -1526,7 +1549,6 @@ void CmndTopic(void) {
 void CmndButtonTopic(void) {
   if (!XdrvMailbox.grpflg && (XdrvMailbox.data_len > 0)) {
     MakeValidMqtt(0, XdrvMailbox.data);
-    if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_client)) { SetShortcutDefault(); }
     switch (Shortcut()) {
       case SC_CLEAR: SettingsUpdateText(SET_MQTT_BUTTON_TOPIC, ""); break;
       case SC_DEFAULT: SettingsUpdateText(SET_MQTT_BUTTON_TOPIC, TasmotaGlobal.mqtt_topic); break;
@@ -1540,7 +1562,6 @@ void CmndButtonTopic(void) {
 void CmndSwitchTopic(void) {
   if (!XdrvMailbox.grpflg && (XdrvMailbox.data_len > 0)) {
     MakeValidMqtt(0, XdrvMailbox.data);
-    if (!strcmp(XdrvMailbox.data, TasmotaGlobal.mqtt_client)) { SetShortcutDefault(); }
     switch (Shortcut()) {
       case SC_CLEAR: SettingsUpdateText(SET_MQTT_SWITCH_TOPIC, ""); break;
       case SC_DEFAULT: SettingsUpdateText(SET_MQTT_SWITCH_TOPIC, TasmotaGlobal.mqtt_topic); break;

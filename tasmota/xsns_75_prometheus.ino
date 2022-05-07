@@ -200,6 +200,7 @@ void HandleMetrics(void) {
     PSTR("image"), TasmotaGlobal.image_name,
     PSTR("build_timestamp"), GetBuildDateAndTime().c_str(),
     PSTR("devicename"), SettingsText(SET_DEVICENAME),
+    PSTR("friendlyname"), SettingsText(SET_FRIENDLYNAME1),
     nullptr);
 
   WritePromMetricInt32(PSTR("uptime_seconds"), kPromMetricGauge, TasmotaGlobal.uptime, nullptr);
@@ -282,7 +283,7 @@ void HandleMetrics(void) {
   }
 
   ResponseClear();
-  MqttShowSensor(); //Pull sensor data
+  MqttShowSensor(true); //Pull sensor data
   String jsonStr = ResponseData();
   JsonParser parser((char *)jsonStr.c_str());
   JsonParserObject root = parser.getRootObject();

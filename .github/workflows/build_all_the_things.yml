@@ -3,6 +3,7 @@ name: Tasmota CI
 on:
   workflow_dispatch:
   pull_request:
+    branches: development
     paths:
       - '**.c'
       - '**.cpp'
@@ -13,14 +14,17 @@ on:
       - '**.properties'
       - 'pio-tools/*.py'
       - '**.ini'
+      - '.github/workflows/build_all_the_things.yml'
 
 jobs:
   base-images:
     runs-on: ubuntu-latest
+    if: github.repository == 'arendst/Tasmota'
     strategy:
       matrix:
         variant:
           - tasmota
+          - tasmota4M
           - tasmota-display
           - tasmota-ir
           - tasmota-knx
@@ -36,19 +40,24 @@ jobs:
           - tasmota32-display
           - tasmota32-ir
           - tasmota32-lvgl
-          - tasmota32-odroidgo
+          - tasmota32s2
           - tasmota32c3
           - tasmota32solo1
+          - tasmota32solo1-safeboot
+          - tasmota32-safeboot
+          - tasmota32c3-safeboot
+          - tasmota32s2-safeboot
+          - tasmota32s3-safeboot
     steps:
       - uses: actions/checkout@v2
       - name: Set up Python
         uses: actions/setup-python@v1
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          #python -m pip install --upgrade pip
           pip install -U platformio
-          platformio upgrade --dev
-          platformio update
+          #platformio upgrade --dev
+          #platformio update
       - name: Run PlatformIO
         run: platformio run -e ${{ matrix.variant }}
       - uses: actions/upload-artifact@v2
@@ -58,9 +67,10 @@ jobs:
 
   language-images:
     runs-on: ubuntu-latest
+    if: github.repository == 'arendst/Tasmota'
     strategy:
       matrix:
-        variant: [ tasmota, tasmota32 ]
+        variant: [ tasmota ]
         language: [ AF, BG, BR, CN, CZ, DE, ES, FR, FY, GR, HE, HU, IT, KO, NL, PL, PT, RO, RU, SE, SK, TR, TW, UK, VN ]
     steps:
       - uses: actions/checkout@v2
@@ -68,10 +78,10 @@ jobs:
         uses: actions/setup-python@v1
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          #python -m pip install --upgrade pip
           pip install -U platformio
-          platformio upgrade --dev
-          platformio update
+          #platformio upgrade --dev
+          #platformio update
       - name: Run PlatformIO
         run: platformio run -e ${{ matrix.variant }}-${{ matrix.language }}
       - uses: actions/upload-artifact@v2

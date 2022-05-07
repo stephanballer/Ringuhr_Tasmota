@@ -21,10 +21,15 @@ extern "C" {
 extern struct rst_info resetInfo;
 }
 
+#ifdef USE_KNX
+bool knx_started = false;
+#endif  // USE_KNX
+
 /*********************************************************************************************\
  * Watchdog extension (https://github.com/esp8266/Arduino/issues/1532)
 \*********************************************************************************************/
 
+#ifdef ESP8266
 #include <Ticker.h>
 
 Ticker tickerOSWatch;
@@ -38,12 +43,7 @@ uint8_t oswatch_blocked_loop = 0;
 //void OsWatchTicker() IRAM_ATTR;
 #endif  // USE_WS2812_DMA
 
-#ifdef USE_KNX
-bool knx_started = false;
-#endif  // USE_KNX
-
-void OsWatchTicker(void)
-{
+void OsWatchTicker(void) {
   uint32_t t = millis();
   uint32_t last_run = t - oswatch_last_loop_time;
 
@@ -66,27 +66,33 @@ void OsWatchTicker(void)
   }
 }
 
-void OsWatchInit(void)
-{
+void OsWatchInit(void) {
   oswatch_blocked_loop = RtcSettings.oswatch_blocked_loop;
   RtcSettings.oswatch_blocked_loop = 0;
   oswatch_last_loop_time = millis();
   tickerOSWatch.attach_ms(((OSWATCH_RESET_TIME / 3) * 1000), OsWatchTicker);
 }
 
-void OsWatchLoop(void)
-{
+void OsWatchLoop(void) {
   oswatch_last_loop_time = millis();
 //  while(1) delay(1000);  // this will trigger the os watch
 }
 
-bool OsWatchBlockedLoop(void)
-{
+bool OsWatchBlockedLoop(void) {
   return oswatch_blocked_loop;
 }
 
-uint32_t ResetReason(void)
-{
+#else  // Anything except ESP8266
+
+void OsWatchInit(void) {}
+void OsWatchLoop(void) {}
+bool OsWatchBlockedLoop(void) {
+  return false;
+}
+
+#endif  // ESP8266
+
+uint32_t ResetReason(void) {
   /*
     user_interface.h
     REASON_DEFAULT_RST      = 0,  // "Power on"                normal startup by power on
@@ -100,9 +106,8 @@ uint32_t ResetReason(void)
   return ESP_ResetInfoReason();
 }
 
-String GetResetReason(void)
-{
-  if (oswatch_blocked_loop) {
+String GetResetReason(void) {
+  if (OsWatchBlockedLoop()) {
     char buff[32];
     strncpy_P(buff, PSTR(D_JSON_BLOCKED_LOOP), sizeof(buff));
     return String(buff);
@@ -314,7 +319,7 @@ float CharToFloat(const char *str)
 
   strlcpy(strbuf, str, sizeof(strbuf));
   char *pt = strbuf;
-  if (*pt == '\0') { return 0.0; }
+  if (*pt == '\0') { return 0.0f; }
 
   while ((*pt != '\0') && isspace(*pt)) { pt++; }  // Trim leading spaces
 
@@ -671,9 +676,8 @@ bool ParseIPv4(uint32_t* addr, const char* str_p)
   return (3 == i);
 }
 
-// Function to parse & check if version_str is newer than our currently installed version.
-bool NewerVersion(char* version_str)
-{
+bool NewerVersion(char* version_str) {
+  // Function to parse & check if version_str is newer than our currently installed version.
   uint32_t version = 0;
   uint32_t i = 0;
   char *str_ptr;
@@ -731,9 +735,9 @@ float ConvertTempToFahrenheit(float c) {
   float result = c;
 
   if (!isnan(c) && Settings->flag.temperature_conversion) {    // SetOption8 - Switch between Celsius or Fahrenheit
-    result = c * 1.8 + 32;                                     // Fahrenheit
+    result = c * 1.8f + 32;                                    // Fahrenheit
   }
-  result = result + (0.1 * Settings->temp_comp);
+  result = result + (0.1f * Settings->temp_comp);
   return result;
 }
 
@@ -741,9 +745,9 @@ float ConvertTempToCelsius(float c) {
   float result = c;
 
   if (!isnan(c) && !Settings->flag.temperature_conversion) {   // SetOption8 - Switch between Celsius or Fahrenheit
-    result = (c - 32) / 1.8;                                   // Celsius
+    result = (c - 32) / 1.8f;                                  // Celsius
   }
-  result = result + (0.1 * Settings->temp_comp);
+  result = result + (0.1f * Settings->temp_comp);
   return result;
 }
 
@@ -758,65 +762,69 @@ float ConvertTemp(float c) {
   return ConvertTempToFahrenheit(c);
 }
 
-char TempUnit(void)
-{
+char TempUnit(void) {
   // SetOption8  - Switch between Celsius or Fahrenheit
   return (Settings->flag.temperature_conversion) ? D_UNIT_FAHRENHEIT[0] : D_UNIT_CELSIUS[0];
 }
 
-float ConvertHumidity(float h)
-{
+float ConvertHumidity(float h) {
   float result = h;
 
   TasmotaGlobal.global_update = TasmotaGlobal.uptime;
   TasmotaGlobal.humidity = h;
 
-  result = result + (0.1 * Settings->hum_comp);
+  result = result + (0.1f * Settings->hum_comp);
 
   return result;
 }
 
-float CalcTempHumToDew(float t, float h)
-{
+float CalcTempHumToDew(float t, float h) {
   if (isnan(h) || isnan(t)) { return NAN; }
 
   if (Settings->flag.temperature_conversion) {                 // SetOption8 - Switch between Celsius or Fahrenheit
-    t = (t - 32) / 1.8;                                       // Celsius
+    t = (t - 32) / 1.8f;                                        // Celsius
   }
 
-  float gamma = TaylorLog(h / 100) + 17.62 * t / (243.5 + t);
-  float result = (243.5 * gamma / (17.62 - gamma));
+  float gamma = TaylorLog(h / 100) + 17.62f * t / (243.5f + t);
+  float result = (243.5f * gamma / (17.62f - gamma));
 
   if (Settings->flag.temperature_conversion) {                 // SetOption8 - Switch between Celsius or Fahrenheit
-    result = result * 1.8 + 32;                               // Fahrenheit
+    result = result * 1.8f + 32;                                // Fahrenheit
   }
   return result;
 }
 
-float ConvertPressure(float p)
-{
+float ConvertPressure(float p) {
   float result = p;
 
   TasmotaGlobal.global_update = TasmotaGlobal.uptime;
   TasmotaGlobal.pressure_hpa = p;
 
-  if (!isnan(p) && Settings->flag.pressure_conversion) {  // SetOption24 - Switch between hPa or mmHg pressure unit
-    result = p * 0.75006375541921;                       // mmHg
+  if (!isnan(p) && Settings->flag.pressure_conversion) {       // SetOption24 - Switch between hPa or mmHg pressure unit
+    if (Settings->flag5.mm_vs_inch) {                          // SetOption139 - Switch between mmHg or inHg pressure unit
+//      result = p * 0.02952998016471;                           // inHg
+      result = p * 0.0295299f;                                 // inHg (double to float saves 16 bytes!)
+    } else {
+//      result = p * 0.75006375541921;                           // mmHg
+      result = p * 0.7500637f;                                 // mmHg (double to float saves 16 bytes!)
+    }
   }
   return result;
 }
 
-float ConvertPressureForSeaLevel(float pressure)
-{
-  if (pressure == 0.0f)
+float ConvertPressureForSeaLevel(float pressure) {
+  if (pressure == 0.0f) {
     return pressure;
-
-  return ConvertPressure((pressure / FastPrecisePow(1.0 - ((float)Settings->altitude / 44330.0f), 5.255f)) - 21.6f);
+  }
+  return ConvertPressure((pressure / FastPrecisePowf(1.0f - ((float)Settings->altitude / 44330.0f), 5.255f)) - 21.6f);
 }
 
-String PressureUnit(void)
-{
-  return (Settings->flag.pressure_conversion) ? String(F(D_UNIT_MILLIMETER_MERCURY)) : String(F(D_UNIT_PRESSURE));
+const char kPressureUnit[] PROGMEM = D_UNIT_PRESSURE "|" D_UNIT_MILLIMETER_MERCURY "|" D_UNIT_INCH_MERCURY;
+
+String PressureUnit(void) {
+  uint32_t index = (Settings->flag.pressure_conversion) ? Settings->flag5.mm_vs_inch +1 : 0;
+  char text[8];
+  return String(GetTextIndexed(text, sizeof(text), index, kPressureUnit));
 }
 
 float ConvertSpeed(float s)
@@ -825,10 +833,9 @@ float ConvertSpeed(float s)
   return s * kSpeedConversionFactor[Settings->flag2.speed_conversion];
 }
 
-String SpeedUnit(void)
-{
-  char speed[8];
-  return String(GetTextIndexed(speed, sizeof(speed), Settings->flag2.speed_conversion, kSpeedUnit));
+String SpeedUnit(void) {
+  char text[8];
+  return String(GetTextIndexed(text, sizeof(text), Settings->flag2.speed_conversion, kSpeedUnit));
 }
 
 void ResetGlobalValues(void)
@@ -1462,7 +1469,7 @@ void TemplateGpios(myio *gp)
   for (uint32_t i = 0; i < nitems(Settings->user_template.gp.io); i++) {
 #if defined(ESP32) && CONFIG_IDF_TARGET_ESP32C3
     dest[i] = src[i];
-#elif defined(CONFIG_IDF_TARGET_ESP32S2)
+#elif defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)
     if (22 == i) { j = 33; }    // skip 22-32
     dest[j] = src[i];
     j++;
@@ -1520,13 +1527,18 @@ void ModuleDefault(uint32_t module)
 void SetModuleType(void)
 {
   TasmotaGlobal.module_type = (USER_MODULE == Settings->module) ? Settings->user_template_base : Settings->module;
+#ifdef ESP32
+  if (TasmotaGlobal.emulated_module_type) {
+    TasmotaGlobal.module_type = TasmotaGlobal.emulated_module_type;
+  }
+#endif
 }
 
 bool FlashPin(uint32_t pin)
 {
 #if defined(ESP32) && CONFIG_IDF_TARGET_ESP32C3
   return (pin > 10) && (pin < 18);        // ESP32C3 has GPIOs 11-17 reserved for Flash
-#elif defined(CONFIG_IDF_TARGET_ESP32S2)
+#elif defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)
   return (pin > 21) && (pin < 33);        // ESP32S2 skip 22-32
 #elif defined(CONFIG_IDF_TARGET_ESP32)
   return (pin >= 28) && (pin <= 31);      // ESP21 skip 28-31
@@ -1541,6 +1553,8 @@ bool RedPin(uint32_t pin) // pin may be dangerous to change, display in RED in t
   return false;     // no red pin on ESP32C3
 #elif defined(CONFIG_IDF_TARGET_ESP32S2)
   return false;     // no red pin on ESP32S3
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+  return (33<=pin) && (37>=pin);  // ESP32S3: GPIOs 33..37 are usually used for PSRAM
 #elif defined(CONFIG_IDF_TARGET_ESP32)  // red pins are 6-11 for original ESP32, other models like PICO are not impacted if flash pins are condfigured
   // PICO can also have 16/17/18/23 not available
   return ((6<=pin) && (11>=pin)) || (16==pin) || (17==pin);  // TODO adapt depending on the exact type of ESP32
@@ -1880,15 +1894,21 @@ void SetSerialBegin(void) {
   AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_SERIAL "Set to %s %d bit/s"), GetSerialConfig().c_str(), TasmotaGlobal.baudrate);
   Serial.flush();
 #ifdef ESP8266
-  Serial.begin(TasmotaGlobal.baudrate, (SerialConfig)pgm_read_byte(kTasmotaSerialConfig + Settings->serial_config));
+  Serial.begin(TasmotaGlobal.baudrate, (SerialConfig)ConvertSerialConfig(Settings->serial_config));
   SetSerialSwap();
 #endif  // ESP8266
 #ifdef ESP32
+#ifdef ARDUINO_USB_CDC_ON_BOOT
+//  Serial.end();
+//  Serial.begin();
+  // Above sequence ends in "Exception":5,"Reason":"Load access fault"
+  AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_SERIAL "HWCDC supports 115200 bit/s only"));
+#else
   delay(10);  // Allow time to cleanup queues - if not used hangs ESP32
   Serial.end();
   delay(10);  // Allow time to cleanup queues - if not used hangs ESP32
-  uint32_t config = pgm_read_dword(kTasmotaSerialConfig + Settings->serial_config);
-  Serial.begin(TasmotaGlobal.baudrate, config);
+  Serial.begin(TasmotaGlobal.baudrate, ConvertSerialConfig(Settings->serial_config));
+#endif  // Not ARDUINO_USB_CDC_ON_BOOT
 #endif  // ESP32
 }
 
@@ -1952,6 +1972,57 @@ void SerialSendDecimal(char *values)
   for (char* str = strtok_r(values, ",", &p); str; str = strtok_r(nullptr, ",", &p)) {
     code = (uint8_t)atoi(str);
     Serial.write(code);
+  }
+}
+
+/*********************************************************************************************/
+
+uint8_t Bcd2Dec(uint8_t n) {
+  return n - 6 * (n >> 4);
+}
+
+uint8_t Dec2Bcd(uint8_t n) {
+  return n + 6 * (n / 10);
+}
+
+/*********************************************************************************************/
+
+uint8_t TasShiftIn(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder) {
+  uint8_t value = 0;
+
+  for (uint32_t i = 0; i < 8; ++i) {
+    digitalWrite(clockPin, HIGH);
+#ifdef ESP32
+    delayMicroseconds(1);
+#endif
+    if(bitOrder == LSBFIRST) {
+      value |= digitalRead(dataPin) << i;
+    } else {
+      value |= digitalRead(dataPin) << (7 - i);
+    }
+    digitalWrite(clockPin, LOW);
+#ifdef ESP32
+    delayMicroseconds(1);
+#endif
+  }
+  return value;
+}
+
+void TasShiftOut(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t val) {
+  for (uint32_t i = 0; i < 8; i++) {
+    if(bitOrder == LSBFIRST) {
+      digitalWrite(dataPin, !!(val & (1 << i)));
+    } else {
+      digitalWrite(dataPin, !!(val & (1 << (7 - i))));
+    }
+    digitalWrite(clockPin, HIGH);
+#ifdef ESP32
+    delayMicroseconds(1);
+#endif
+    digitalWrite(clockPin, LOW);
+#ifdef ESP32
+    delayMicroseconds(1);
+#endif
   }
 }
 
@@ -2285,8 +2356,7 @@ void I2cSetActive(uint32_t addr, uint32_t count = 1)
 }
 
 void I2cSetActiveFound(uint32_t addr, const char *types, uint32_t bus = 0);
-void I2cSetActiveFound(uint32_t addr, const char *types, uint32_t bus)
-{
+void I2cSetActiveFound(uint32_t addr, const char *types, uint32_t bus) {
   I2cSetActive(addr);
 #ifdef ESP32
   if (0 == bus) {
@@ -2308,13 +2378,8 @@ bool I2cActive(uint32_t addr)
   return false;
 }
 
-#ifdef ESP32
 bool I2cSetDevice(uint32_t addr, uint32_t bus = 0);
-bool I2cSetDevice(uint32_t addr, uint32_t bus)
-#else
-bool I2cSetDevice(uint32_t addr)
-#endif
-{
+bool I2cSetDevice(uint32_t addr, uint32_t bus) {
 #ifdef ESP32
   if (!TasmotaGlobal.i2c_enabled_2) { bus = 0; }
   TwoWire & myWire = (bus == 0) ? Wire : Wire1;
@@ -2338,11 +2403,22 @@ bool I2cSetDevice(uint32_t addr)
  *
 \*********************************************************************************************/
 
-void SetSeriallog(uint32_t loglevel)
-{
+void SetTasConlog(uint32_t loglevel) {
   Settings->seriallog_level = loglevel;
   TasmotaGlobal.seriallog_level = loglevel;
   TasmotaGlobal.seriallog_timer = 0;
+}
+
+void SetSeriallog(uint32_t loglevel) {
+#ifdef ESP32
+  if (tasconsole_serial) {
+#endif  // ESP32
+
+  SetTasConlog(loglevel);
+
+#ifdef ESP32
+  }
+#endif  // ESP32
 }
 
 void SetSyslog(uint32_t loglevel)
@@ -2403,7 +2479,7 @@ void SyslogAsync(bool refresh) {
         line_start += 1460;
       }
 #else
-      PortUdp.write(header);
+      PortUdp.write((const uint8_t*)header, strlen(header));
       PortUdp.write((uint8_t*)line_start, len -mxtime -1);
       PortUdp.endPacket();
 #endif
@@ -2511,7 +2587,7 @@ void AddLogData(uint32_t loglevel, const char* log_data, const char* log_data_pa
 
   if ((loglevel <= TasmotaGlobal.seriallog_level) &&
       (TasmotaGlobal.masterlog_level <= TasmotaGlobal.seriallog_level)) {
-    Serial.printf("%s%s%s%s\r\n", mxtime, log_data, log_data_payload, log_data_retained);
+    TasConsole.printf("%s%s%s%s\r\n", mxtime, log_data, log_data_payload, log_data_retained);
   }
 
   if (!TasmotaGlobal.log_buffer) { return; }  // Leave now if there is no buffer available

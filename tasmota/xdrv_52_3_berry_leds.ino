@@ -28,16 +28,12 @@
 
 enum {
   ws2812_grb = 1,
-  ws2812_grbw = 2,
-  sk6812_grb = 3,
-  sk6812_grbw = 4,
+  sk6812_grbw = 2,
 
   neopixel_type_end
 };
 
 typedef NeoPixelBus<NeoGrbFeature, NeoEsp32RmtN800KbpsMethod> neopixel_ws2812_grb_t;
-typedef NeoPixelBus<NeoGrbwFeature, NeoEsp32RmtN800KbpsMethod> neopixel_ws2812_grbw_t;
-typedef NeoPixelBus<NeoGrbFeature, NeoEsp32RmtNSk6812Method> neopixel_sk6812_grb_t;
 typedef NeoPixelBus<NeoGrbwFeature, NeoEsp32RmtNSk6812Method> neopixel_sk6812_grbw_t;
 
 
@@ -94,40 +90,27 @@ extern "C" {
       int32_t cmd = be_toint(vm, 2);
       
       if (0 == cmd) { // 00 : ctor         (leds:int, gpio:int) -> void
-        if (!(argc >= 4 && be_isint(vm, 3) && be_isint(vm, 4))) {
+        if (!(argc >= 6 && be_isint(vm, 3) && be_isint(vm, 4) && be_isint(vm, 5) && be_isint(vm, 6))) {
           be_raise(vm, "value_error", "bad arguments for neopixelbus:ctor");
         }
         int32_t leds = be_toint(vm, 3);
         int32_t gpio = be_toint(vm, 4);
-        int32_t rmt = 0;
-        int32_t neopixel_type = ws2812_grb;
-        if (argc >= 5 && !(be_isnil(vm, 5))) {
-          neopixel_type = be_toint(vm, 5);
-        }
+        int32_t neopixel_type = be_toint(vm, 5);
+        int32_t rmt = be_toint(vm, 6);
         if (neopixel_type < 1) { neopixel_type = 1; }
         if (neopixel_type >= neopixel_type_end) { neopixel_type = neopixel_type_end - 1; }
+        if (rmt < 0) { rmt = 0; }
+        if (rmt >= MAX_RMT) { rmt = MAX_RMT - 1; }
 
         // store type in attribute `_t`
         be_pushint(vm, neopixel_type);
         be_setmember(vm, 1, "_t");
         be_pop(vm, 1);
 
-        if (PinUsed(GPIO_WS2812)) {
-          rmt = 1;    // if WS2812 is already configured by Tasmota UI, we switch to RMT1
-        }
-        if (argc >= 6 && !(be_isnil(vm, 6))) {
-          rmt = be_toint(vm, 6);  // if arg5, then RMT channel is specified
-        }
-        if (rmt < 0) { rmt = 0; }
-        if (rmt >= MAX_RMT) { rmt = MAX_RMT - 1; }
         void * strip = nullptr;
         switch (neopixel_type) {
           case ws2812_grb:    strip = new neopixel_ws2812_grb_t(leds, gpio, (NeoBusChannel) rmt);
             break;
-          case ws2812_grbw:   strip = new neopixel_ws2812_grbw_t(leds, gpio, (NeoBusChannel) rmt);
-            break;
-          case sk6812_grb:    strip = new neopixel_sk6812_grb_t(leds, gpio, (NeoBusChannel) rmt);
-           break;
           case sk6812_grbw:   strip = new neopixel_sk6812_grbw_t(leds, gpio, (NeoBusChannel) rmt);
            break;
         }
@@ -141,8 +124,6 @@ extern "C" {
         const void * s = be_get_neopixelbus(vm);    // raises an exception if pointer is invalid
         // initialize all possible variants
         neopixel_ws2812_grb_t * s_ws2812_grb = (leds_type == ws2812_grb) ? (neopixel_ws2812_grb_t*) s : nullptr;
-        neopixel_ws2812_grbw_t * s_ws2812_grbw = (leds_type == ws2812_grbw) ? (neopixel_ws2812_grbw_t*) s : nullptr;
-        neopixel_sk6812_grb_t * s_sk6812_grb = (leds_type == sk6812_grb) ? (neopixel_sk6812_grb_t*) s : nullptr;
         neopixel_sk6812_grbw_t * s_sk6812_grbw = (leds_type == sk6812_grbw) ? (neopixel_sk6812_grbw_t*) s : nullptr;
 
         be_pushnil(vm);     // push a default `nil` return value
@@ -150,46 +131,32 @@ extern "C" {
         switch (cmd) {
           case 1: // # 01 : begin        void -> void
             if (s_ws2812_grb)       s_ws2812_grb->Begin();
-            if (s_ws2812_grbw)      s_ws2812_grbw->Begin();
-            if (s_sk6812_grb)       s_sk6812_grb->Begin();
             if (s_sk6812_grbw)      s_sk6812_grbw->Begin();
             break;
           case 2: // # 02 : show         void -> void
             if (s_ws2812_grb)       s_ws2812_grb->Show();
-            if (s_ws2812_grbw)      s_ws2812_grbw->Show();
-            if (s_sk6812_grb)       s_sk6812_grb->Show();
             if (s_sk6812_grbw)      s_sk6812_grbw->Show();
             break;
           case 3: // # 03 : CanShow      void -> bool
             if (s_ws2812_grb)       be_pushbool(vm, s_ws2812_grb->CanShow());
-            if (s_ws2812_grbw)      be_pushbool(vm, s_ws2812_grbw->CanShow());
-            if (s_sk6812_grb)       be_pushbool(vm, s_sk6812_grb->CanShow());
             if (s_sk6812_grbw)      be_pushbool(vm, s_sk6812_grbw->CanShow());
             break;
           case 4: // # 04 : IsDirty      void -> bool
             if (s_ws2812_grb)       be_pushbool(vm, s_ws2812_grb->IsDirty());
-            if (s_ws2812_grbw)      be_pushbool(vm, s_ws2812_grbw->IsDirty());
-            if (s_sk6812_grb)       be_pushbool(vm, s_sk6812_grb->IsDirty());
             if (s_sk6812_grbw)      be_pushbool(vm, s_sk6812_grbw->IsDirty());
             break;
           case 5: // # 05 : Dirty        void -> void
             if (s_ws2812_grb)       s_ws2812_grb->Dirty();
-            if (s_ws2812_grbw)      s_ws2812_grbw->Dirty();
-            if (s_sk6812_grb)       s_sk6812_grb->Dirty();
             if (s_sk6812_grbw)      s_sk6812_grbw->Dirty();
             break;
           case 6: // # 06 : Pixels       void -> bytes() (mapped to the buffer)
             {
             size_t pixels_bytes;
             if (s_ws2812_grb)       pixels_bytes = s_ws2812_grb->PixelsSize();
-            if (s_ws2812_grbw)      pixels_bytes = s_ws2812_grbw->PixelsSize();
-            if (s_sk6812_grb)       pixels_bytes = s_sk6812_grb->PixelsSize();
             if (s_sk6812_grbw)      pixels_bytes = s_sk6812_grbw->PixelsSize();
 
             uint8_t * pixels;
             if (s_ws2812_grb)       pixels = s_ws2812_grb->Pixels();
-            if (s_ws2812_grbw)      pixels = s_ws2812_grbw->Pixels();
-            if (s_sk6812_grb)       pixels = s_sk6812_grb->Pixels();
             if (s_sk6812_grbw)      pixels = s_sk6812_grbw->Pixels();
             
             be_getbuiltin(vm, "bytes");
@@ -201,14 +168,10 @@ extern "C" {
             break;
           case 7: // # 07 : PixelSize    void -> int
             if (s_ws2812_grb)       be_pushint(vm, s_ws2812_grb->PixelSize());
-            if (s_ws2812_grbw)      be_pushint(vm, s_ws2812_grbw->PixelSize());
-            if (s_sk6812_grb)       be_pushint(vm, s_sk6812_grb->PixelSize());
             if (s_sk6812_grbw)      be_pushint(vm, s_sk6812_grbw->PixelSize());
             break;
           case 8: // # 08 : PixelCount   void -> int
             if (s_ws2812_grb)       be_pushint(vm, s_ws2812_grb->PixelCount());
-            if (s_ws2812_grbw)      be_pushint(vm, s_ws2812_grbw->PixelCount());
-            if (s_sk6812_grb)       be_pushint(vm, s_sk6812_grb->PixelCount());
             if (s_sk6812_grbw)      be_pushint(vm, s_sk6812_grbw->PixelCount());
             break;
           case 9: // # 09 : ClearTo      (color:??) -> void
@@ -219,8 +182,6 @@ extern "C" {
             uint8_t g = (rgbw & 0xFF00) >> 8;
             uint8_t b = (rgbw & 0xFF);
             if (s_ws2812_grb)       s_ws2812_grb->ClearTo(RgbColor(r, g, b));
-            if (s_ws2812_grbw)      s_ws2812_grbw->ClearTo(RgbwColor(r, g, b, 0));
-            if (s_sk6812_grb)       s_sk6812_grb->ClearTo(RgbColor(r, g, b));
             if (s_sk6812_grbw)      s_sk6812_grbw->ClearTo(RgbwColor(r, g, b, 0));
             }
             break;
@@ -233,8 +194,6 @@ extern "C" {
             uint8_t g = (rgbw & 0xFF00) >> 8;
             uint8_t b = (rgbw & 0xFF);
             if (s_ws2812_grb)       s_ws2812_grb->SetPixelColor(idx, RgbColor(r, g, b));
-            if (s_ws2812_grbw)      s_ws2812_grbw->SetPixelColor(idx, RgbwColor(r, g, b, 0));
-            if (s_sk6812_grb)       s_sk6812_grb->SetPixelColor(idx, RgbColor(r, g, b));
             if (s_sk6812_grbw)      s_sk6812_grbw->SetPixelColor(idx, RgbwColor(r, g, b, 0));
             }
             break;
@@ -247,43 +206,12 @@ extern "C" {
               RgbColor rgb = s_ws2812_grb->GetPixelColor(idx);
               be_pushint(vm, (rgb.R << 16) | (rgb.G << 8) | rgb.B); 
             }
-            if (s_ws2812_grbw) {
-              RgbwColor rgbw = s_ws2812_grbw->GetPixelColor(idx);
-              be_pushint(vm, (rgbw.W << 24) | (rgb.R << 16) | (rgb.G << 8) | rgb.B); 
-            }
-            if (s_sk6812_grb) {
-              RgbColor rgb = s_sk6812_grb->GetPixelColor(idx);
-              be_pushint(vm, (rgb.R << 16) | (rgb.G << 8) | rgb.B); 
-            }
             if (s_sk6812_grbw) {
               RgbwColor rgbw = s_sk6812_grbw->GetPixelColor(idx);
               be_pushint(vm, (rgbw.W << 24) | (rgb.R << 16) | (rgb.G << 8) | rgb.B); 
             }
             }
             break;
-          // case 20: // # 20 : RotateLeft   (rot:int [, first:int, last:int]) -> void
-          // case 21: // # 21 : RotateRight  (rot:int [, first:int, last:int]) -> void
-          // case 22: // # 22 : ShiftLeft    (rot:int [, first:int, last:int]) -> void
-          // case 23: // # 23 : ShiftRight   (rot:int [, first:int, last:int]) -> void
-          //   {
-          //   int32_t rot = be_toint(vm, 3);
-          //   int32_t first = -1;
-          //   int32_t last = -1;
-          //   if (argc >= 5) {
-          //     first = be_toint(vm, 4);
-          //     last = be_toint(vm, 5);
-          //   }
-          //   if (20 == cmd) {
-          //     if (first >= 0) { strip->RotateLeft(rot, first, last); } else { strip->RotateLeft(rot); };
-          //   } else if (21 == cmd) {
-          //     if (first >= 0) { strip->RotateRight(rot, first, last); } else { strip->RotateRight(rot); };
-          //   } else if (22 == cmd) {
-          //     if (first >= 0) { strip->ShiftLeft(rot, first, last); } else { strip->ShiftLeft(rot); };
-          //   } else if (23 == cmd) {
-          //     if (first >= 0) { strip->ShiftRight(rot, first, last); } else { strip->ShiftRight(rot); };
-          //   }
-          //   }
-          //   break;
           default:
             break;
         }

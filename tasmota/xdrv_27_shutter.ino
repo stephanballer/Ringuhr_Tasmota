@@ -1,7 +1,7 @@
 /*
   xdrv_27_Shutter[i].ino - Shutter/Blind support for Tasmota
 
-  Copyright (C) 2021  Stefan Bode
+  Copyright (C) 2022  Stefan Bode 
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -27,11 +27,19 @@
   #define SHUTTER_STEPPER
 #endif
 
+#ifndef SHUTTER_RELAY_OPERATION_TIME
+  #define SHUTTER_RELAY_OPERATION_TIME 100 // wait for direction relay 0.1sec before power up main relay
+#endif
+
+#ifndef MOTOR_STOP_TIME
+ #define MOTOR_STOP_TIME 500 // wait 0.5 second after stop to do any other action. e.g. move in the opposite direction
+#endif
+
 //#define SHUTTER_UNITTEST
 
 #define D_SHUTTER "SHUTTER"
 
-const uint16_t MOTOR_STOP_TIME = 500;   // in mS
+
 const uint16_t RESOLUTION = 1000;       // incresed to 1000 in 8.5 to ramp servos
 const uint8_t  STEPS_PER_SECOND = 20;   // FUNC_EVERY_50_MSECOND
 const uint16_t pwm_servo_max = 500;
@@ -167,8 +175,16 @@ void ShutterRtc50mS(void)
           if (Shutter[i].accelerator) {
             //AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("SHT: Accelerator i=%d -> %d"),i, Shutter[i].accelerator);
             ShutterUpdateVelocity(i);
+	    digitalWrite(Pin(GPIO_PWM1, i), LOW);
+  #ifdef ESP8266
+            // Convert frequency into clock cycles
+            uint32_t cc = microsecondsToClockCycles(1000000UL) / Shutter[i].pwm_velocity;
+            startWaveformClockCycles(Pin(GPIO_PWM1, i), cc/2, cc/2, 0, -1, 0, false);
+  #endif  // ESP8266
+  #ifdef ESP32
             analogWriteFreq(Shutter[i].pwm_velocity);
             analogWrite(Pin(GPIO_PWM1, i), 50);
+  #endif  // ESP32
           }
         break;
       }
@@ -474,23 +490,26 @@ void ShutterDecellerateForStop(uint8_t i)
 
 void ShutterPowerOff(uint8_t i)
 {
-  AddLog(LOG_LEVEL_DEBUG, PSTR("SHT: Stop %d. Mode %d, time:%d"), i+1,Shutter[i].switch_mode, Shutter[i].time); // fix log to indicate correct shutter number
+  AddLog(LOG_LEVEL_DEBUG, PSTR("SHT: Stop %d Mode %d time %d"), i+1,Shutter[i].switch_mode, Shutter[i].time); // fix log to indicate correct shutter number
   ShutterDecellerateForStop(i);
+  uint8_t cur_relay = Settings->shutter_startrelay[i] + (Shutter[i].direction == 1 ? 0 : (uint8_t)(ShutterGlobal.position_mode == SHT_TIME)) ;
   if (Shutter[i].direction !=0) {
     Shutter[i].direction = 0;
+  }
+  if (Shutter[i].real_position == Shutter[i].start_position)  {
+    //AddLog(LOG_LEVEL_DEBUG, PSTR("SHT: Update target tilt shutter %d from %d to %d"), i+1,  Shutter[i].tilt_target_pos , Shutter[i].tilt_real_pos);
+    Shutter[i].tilt_target_pos = Shutter[i].tilt_real_pos;
   }
   TasmotaGlobal.rules_flag.shutter_moved = 1;
   switch (Shutter[i].switch_mode) {
     case SHT_SWITCH:
-      if ((1 << (Settings->shutter_startrelay[i]-1)) & TasmotaGlobal.power) {
-        ExecuteCommandPowerShutter(Settings->shutter_startrelay[i], 0, SRC_SHUTTER);
-      }
-      if ((1 << (Settings->shutter_startrelay[i])) & TasmotaGlobal.power) {
-        ExecuteCommandPowerShutter(Settings->shutter_startrelay[i]+1, 0, SRC_SHUTTER);
+      for (int8_t k=0;k<2;k++) {
+        if ((1 << (Settings->shutter_startrelay[i]+k-1)) & TasmotaGlobal.power) {
+          ExecuteCommandPowerShutter(Settings->shutter_startrelay[i]+k, 0, SRC_SHUTTER);
+        }
       }
     break;
     case SHT_PULSE:
-      uint8_t cur_relay = Settings->shutter_startrelay[i] + (Shutter[i].direction == 1 ? 0 : (uint8_t)(ShutterGlobal.position_mode == SHT_TIME)) ;
       // we have a momentary switch here. Needs additional pulse on same relay after the end
       if ((SRC_PULSETIMER == TasmotaGlobal.last_source || SRC_SHUTTER == TasmotaGlobal.last_source || SRC_WEBGUI == TasmotaGlobal.last_source)) {
         ExecuteCommandPowerShutter(cur_relay, 1, SRC_SHUTTER);
@@ -512,11 +531,8 @@ void ShutterPowerOff(uint8_t i)
       char scmnd[20];
   #ifdef SHUTTER_CLEAR_PWM_ONSTOP
       // free the PWM servo lock on stop.
-      snprintf_P(scmnd, sizeof(scmnd), PSTR(D_CMND_PWM "%d 0" ), i+1);
-  #else
-      snprintf_P(scmnd, sizeof(scmnd), PSTR(D_CMND_PWM "%d %d" ), i+1,Shutter[i].pwm_value);
+      analogWrite(Pin(GPIO_PWM1, i), 0);
   #endif
-      ExecuteCommand(scmnd, SRC_BUTTON);
       break;
   }
   Settings->save_data = savedata_original;
@@ -552,12 +568,12 @@ void ShutterUpdatePosition(void)
         Settings->shutter_position[i] = ShutterRealToPercentPosition(Shutter[i].real_position, i);
         Shutter[i].start_position = Shutter[i].real_position;
 
-        // manage venetian blinds
-        Shutter[i].tilt_target_pos = Settings->shutter_position[i] == 0   ? Shutter[i].tilt_config[0] : Shutter[i].tilt_target_pos;
-        Shutter[i].tilt_target_pos = Settings->shutter_position[i] == 100 ? Shutter[i].tilt_config[1] : Shutter[i].tilt_target_pos;
         //AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("SHT: Pre: Tilt not match %d -> %d, moving: %d"),Shutter[i].tilt_real_pos,Shutter[i].tilt_target_pos,Shutter[i].tiltmoving);
-        if (abs(Shutter[i].tilt_real_pos - Shutter[i].tilt_target_pos) > Shutter[i].min_TiltChange && Shutter[i].tiltmoving == 0) {
+        if (abs(Shutter[i].tilt_real_pos - Shutter[i].tilt_target_pos) > Shutter[i].min_TiltChange && Shutter[i].tiltmoving == 0
+            && Settings->shutter_position[i] > 0 && Settings->shutter_position[i] < 100) {
           AddLog(LOG_LEVEL_INFO, PSTR("SHT: Tilt not match %d -> %d"),Shutter[i].tilt_real_pos,Shutter[i].tilt_target_pos);
+          char databuf[1] = "";
+          XdrvMailbox.data = databuf;
           XdrvMailbox.payload = -99;
           XdrvMailbox.index = i+1;
           Shutter[i].tiltmoving = 1;
@@ -716,6 +732,9 @@ void ShutterRelayChanged(void)
           TasmotaGlobal.last_source = SRC_SHUTTER; // avoid switch off in the next loop
           if (Shutter[i].direction != 0 ) Shutter[i].target_position = Shutter[i].real_position;
       }
+      if (powerstate_local > 0) {
+        Shutter[i].tiltmoving = 0;
+      }
       switch (ShutterGlobal.position_mode) {
         // enum Shutterposition_mode {SHT_TIME, SHT_TIME_UP_DOWN, SHT_TIME_GARAGE, SHT_COUNTER, SHT_PWM_VALUE, SHT_PWM_TIME,};
         case SHT_TIME_UP_DOWN:
@@ -761,7 +780,7 @@ void ShutterRelayChanged(void)
 
 
 			  } // switch (ShutterGlobal.position_mode)
-        AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("SHT: Shtr%d, Target %ld, Powerstatelocal %d"), i+1, Shutter[i].target_position, powerstate_local);
+        AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("SHT: Shtr%d, Target %ld, Power: %d, tiltmv: %d"), i+1, Shutter[i].target_position, powerstate_local,Shutter[i].tiltmoving);
 		 } // if (manual_relays_changed)
   } // for (uint32_t i = 0; i < TasmotaGlobal.shutters_present; i++)
 }
@@ -1174,6 +1193,8 @@ void CmndShutterPosition(void)
         }
         if (Shutter[index].direction != new_shutterdirection) {
           ShutterStartInit(index, new_shutterdirection, Shutter[index].target_position);
+          uint8_t save_direction = Shutter[index].direction;
+          Shutter[index].direction = 0; // set temporary direction = 0 to avoid RTC timer sarting. Some delay may happen before shutter starts moving
           switch (ShutterGlobal.position_mode) {
             case SHT_COUNTER:
             case SHT_PWM_TIME:
@@ -1182,6 +1203,7 @@ void CmndShutterPosition(void)
               if (!ShutterGlobal.skip_relay_change) {
                 // Code for shutters with circuit safe configuration, switch the direction Relay
                 ExecuteCommandPowerShutter(Settings->shutter_startrelay[index] +1, new_shutterdirection == 1 ? 0 : 1, SRC_SHUTTER);
+                delay(SHUTTER_RELAY_OPERATION_TIME);
                 // power on
                 ExecuteCommandPowerShutter(Settings->shutter_startrelay[index], 1, SRC_SHUTTER);
               }
@@ -1201,9 +1223,9 @@ void CmndShutterPosition(void)
                   AddLog(LOG_LEVEL_INFO, PSTR("SHT: Garage not move in this direction: %d"), Shutter[index].switch_mode == SHT_PULSE);
                   for (uint8_t k=0 ; k <= (uint8_t)(Shutter[index].switch_mode == SHT_PULSE) ; k++) {
                     ExecuteCommandPowerShutter(Settings->shutter_startrelay[index], 1, SRC_SHUTTER);
-                    delay(500);
+                    delay(MOTOR_STOP_TIME);
                     ExecuteCommandPowerShutter(Settings->shutter_startrelay[index], 0, SRC_SHUTTER);
-                    delay(500);
+                    delay(MOTOR_STOP_TIME);
                   }
                   // reset shutter time to avoid 2 seconds above count as runtime
                   Shutter[index].time = 0;
@@ -1212,6 +1234,7 @@ void CmndShutterPosition(void)
               } // if (!ShutterGlobal.skip_relay_change)
             break;
           } // switch (ShutterGlobal.position_mode)
+          Shutter[index].direction = save_direction;
           ShutterGlobal.RelayCurrentMask = 0;
         } // if (Shutter[i].direction[index] != new_shutterdirection)
       } else {
@@ -1608,6 +1631,7 @@ void CmndShutterSetTilt(void)
     }
   }
   XdrvMailbox.data[0] = '\0';
+  AddLog(LOG_LEVEL_INFO, PSTR("SHT: TiltTarget %d, payload %d"), Shutter[XdrvMailbox.index -1].tilt_target_pos,XdrvMailbox.payload);
   ResponseCmndNumber(Shutter[XdrvMailbox.index -1].tilt_target_pos);
   Shutter[XdrvMailbox.index -1].tiltmoving = 1;
   CmndShutterPosition();

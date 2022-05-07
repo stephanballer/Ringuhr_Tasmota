@@ -20,14 +20,14 @@
 // Location specific includes
 #ifndef ESP32_STAGE                         // ESP32 Stage has no core_version.h file. Disable include via PlatformIO Option
 #include <core_version.h>                   // Arduino_Esp8266 version information (ARDUINO_ESP8266_RELEASE and ARDUINO_ESP8266_RELEASE_2_7_1)
-#endif
+#endif // ESP32_STAGE
 #include "tasmota_compat.h"
 #include "tasmota_version.h"                // Tasmota version information
 #include "tasmota.h"                        // Enumeration used in my_user_config.h
 #include "my_user_config.h"                 // Fixed user configurable options
 #ifdef USE_TLS
   #include <t_bearssl.h>                    // We need to include before "tasmota_globals.h" to take precedence over the BearSSL version in Arduino
-#endif  // USE_TLS
+#endif // USE_TLS
 #include "tasmota_globals.h"                // Function prototypes and global configuration
 #include "i18n.h"                           // Language support configured by my_user_config.h
 #include "tasmota_template.h"               // Hardware configuration
@@ -35,6 +35,11 @@
 // Libraries
 #include <ESP8266HTTPClient.h>              // Ota
 #include <ESP8266httpUpdate.h>              // Ota
+#ifdef ESP32
+  #ifdef USE_TLS
+  #include "HTTPUpdateLight.h"              // Ota over HTTPS for ESP32
+  #endif // USE_TLS
+#endif
 #include <StreamString.h>                   // Webserver, Updater
 #include <ext_printf.h>
 #include <SBuffer.hpp>
@@ -70,6 +75,7 @@
 #include <LittleFS.h>
 #ifdef USE_SDCARD
 #include <SD.h>
+#include <SD_MMC.h>
 #endif  // USE_SDCARD
 #include "FFat.h"
 #include "FS.h"
@@ -90,6 +96,47 @@
 const uint32_t VERSION_MARKER[] PROGMEM = { 0x5AA55AA5, 0xFFFFFFFF, 0xA55AA55A };
 
 WiFiUDP PortUdp;                            // UDP Syslog and Alexa
+
+#ifdef ESP32
+/*
+#if CONFIG_IDF_TARGET_ESP32C3 ||            // support USB via HWCDC using JTAG interface
+    CONFIG_IDF_TARGET_ESP32S2 ||            // support USB via USBCDC
+    CONFIG_IDF_TARGET_ESP32S3               // support USB via HWCDC using JTAG interface or USBCDC
+*/
+#if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+
+//#if CONFIG_TINYUSB_CDC_ENABLED              // This define is not recognized here so use USE_USB_SERIAL_CONSOLE
+#ifdef USE_USB_SERIAL_CONSOLE
+//#warning **** TasConsole use USB ****
+
+#if ARDUINO_USB_MODE
+//#warning **** TasConsole ARDUINO_USB_MODE ****
+HWCDC TasConsole;                           // ESP32C3/S3 embedded USB using JTAG interface
+bool tasconsole_serial = false;
+//#warning **** TasConsole uses HWCDC ****
+#else   // No ARDUINO_USB_MODE
+#include "USB.h"
+#include "USBCDC.h"
+USBCDC TasConsole;                          // ESP32Sx embedded USB interface
+bool tasconsole_serial = false;
+//#warning **** TasConsole uses USBCDC ****
+#endif  // ARDUINO_USB_MODE
+
+#else   // No USE_USB_SERIAL_CONSOLE
+HardwareSerial TasConsole = Serial;         // Fallback serial interface for ESP32C3, S2 and S3 if no USB_SERIAL defined
+bool tasconsole_serial = true;
+//#warning **** TasConsole uses Serial ****
+#endif  // USE_USB_SERIAL_CONSOLE
+
+#else   // No ESP32C3, S2 or S3
+HardwareSerial TasConsole = Serial;         // Fallback serial interface for non ESP32C3, S2 and S3
+bool tasconsole_serial = true;
+//#warning **** TasConsole uses Serial ****
+#endif  // ESP32C3, S2 or S3
+
+#else   // No ESP32
+HardwareSerial TasConsole = Serial;         // Only serial interface
+#endif  // ESP32
 
 struct TasmotaGlobal_t {
   uint32_t global_update;                   // Timestamp of last global temperature and humidity update
@@ -149,6 +196,13 @@ struct TasmotaGlobal_t {
   bool enable_logging;                      // Enable logging
 
   StateBitfield global_state;               // Global states (currently Wifi and Mqtt) (8 bits)
+  uint16_t pwm_inverted;                    // PWM inverted flag (1 = inverted) - extended to 16 bits for ESP32
+#ifdef ESP32
+  int16_t pwm_cur_value[MAX_PWMS];          // Current effective values of PWMs as applied to GPIOs
+  int16_t pwm_cur_phase[MAX_PWMS];          // Current phase values of PWMs as applied to GPIOs
+  int16_t pwm_value[MAX_PWMS];              // Wanted values of PWMs after update - -1 means no change
+  int16_t pwm_phase[MAX_PWMS];              // Wanted phase of PWMs after update - -1 means no change
+#endif // ESP32
   uint8_t init_state;                       // Tasmota init state
   uint8_t heartbeat_inverted;               // Heartbeat pulse inverted flag
   uint8_t spi_enabled;                      // SPI configured
@@ -163,11 +217,12 @@ struct TasmotaGlobal_t {
   uint8_t latching_relay_pulse;             // Latching relay pulse timer
   uint8_t active_device;                    // Active device in ExecuteCommandPower
   uint8_t sleep;                            // Current copy of Settings->sleep
+  uint8_t skip_sleep;                       // Abandon sleep and allow loop
   uint8_t leds_present;                     // Max number of LED supported
   uint8_t led_inverted;                     // LED inverted flag (1 = (0 = On, 1 = Off))
   uint8_t led_power;                        // LED power state
   uint8_t ledlnk_inverted;                  // Link LED inverted flag (1 = (0 = On, 1 = Off))
-  uint8_t pwm_inverted;                     // PWM inverted flag (1 = inverted)
+  // uint8_t pwm_inverted;                     // PWM inverted flag (1 = inverted) -- TODO
   uint8_t energy_driver;                    // Energy monitor configured
   uint8_t light_driver;                     // Light module configured
   uint8_t light_type;                       // Light types
@@ -178,9 +233,13 @@ struct TasmotaGlobal_t {
   uint8_t syslog_level;                     // Current copy of Settings->syslog_level
   uint8_t templog_level;                    // Temporary log level to be used by HTTP cm and Telegram
   uint8_t module_type;                      // Current copy of Settings->module or user template type
+  uint8_t emulated_module_type;             // Emulated module type as requested by ESP32
   uint8_t last_source;                      // Last command source
   uint8_t shutters_present;                 // Number of actual define shutters
   uint8_t discovery_counter;                // Delayed discovery counter
+#ifdef USE_PWM_DIMMER
+  uint8_t restore_powered_off_led_counter;  // Seconds before powered-off LED (LEDLink) is restored
+#endif  // USE_PWM_DIMMER
 
 #ifndef SUPPORT_IF_STATEMENT
   uint8_t backlog_index;                    // Command backlog index
@@ -206,6 +265,10 @@ struct TasmotaGlobal_t {
 #else
   char log_buffer[LOG_BUFFER_SIZE];         // Log buffer in DRAM
 #endif  // PIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
+
+#ifdef USE_BERRY
+  bool berry_fast_loop_enabled = false;           // is Berry fast loop enabled, i.e. control is passed at each loop iteration
+#endif // USE_BERRY
 } TasmotaGlobal;
 
 TSettings* Settings = nullptr;
@@ -226,8 +289,7 @@ void setup(void) {
 #ifdef ESP32
 #ifdef DISABLE_ESP32_BROWNOUT
   DisableBrownout();      // Workaround possible weak LDO resulting in brownout detection during Wifi connection
-#endif
-#endif
+#endif  // DISABLE_ESP32_BROWNOUT
 
 #ifdef CONFIG_IDF_TARGET_ESP32
   // restore GPIO16/17 if no PSRAM is found
@@ -240,7 +302,9 @@ void setup(void) {
       gpio_reset_pin(GPIO_NUM_17);
     }
   }
-#endif
+#endif  // CONFIG_IDF_TARGET_ESP32
+#endif  // ESP32
+
   RtcPreInit();
   SettingsInit();
 
@@ -258,6 +322,7 @@ void setup(void) {
   TasmotaGlobal.active_device = 1;
   TasmotaGlobal.global_state.data = 0xF;  // Init global state (wifi_down, mqtt_down) to solve possible network issues
   TasmotaGlobal.enable_logging = 1;
+  TasmotaGlobal.seriallog_level = LOG_LEVEL_INFO;  // Allow specific serial messages until config loaded
 
   RtcRebootLoad();
   if (!RtcRebootValid()) {
@@ -278,11 +343,8 @@ void setup(void) {
     uint32_t baudrate = (RtcSettings.baudrate / 300) * 300;  // Make it a valid baudrate
     if (baudrate) { TasmotaGlobal.baudrate = baudrate; }
   }
-  Serial.begin(TasmotaGlobal.baudrate);
-  Serial.println();
-//  Serial.setRxBufferSize(INPUT_BUFFER_SIZE);  // Default is 256 chars
-  TasmotaGlobal.seriallog_level = LOG_LEVEL_INFO;  // Allow specific serial messages until config loaded
 
+  // Init settings and logging preparing for AddLog use
 #ifdef PIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
   ESP.setIramHeap();
   Settings = (TSettings*)malloc(sizeof(TSettings));             // Allocate in "new" 16k heap space
@@ -298,6 +360,31 @@ void setup(void) {
   if (Settings == nullptr) {
     Settings = (TSettings*)malloc(sizeof(TSettings));
   }
+
+  // Init command console (either serial or USB) preparing for AddLog use
+  Serial.begin(TasmotaGlobal.baudrate);
+  Serial.println();
+//  Serial.setRxBufferSize(INPUT_BUFFER_SIZE);  // Default is 256 chars
+#ifdef ESP32
+#if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+#ifdef USE_USB_SERIAL_CONSOLE
+  TasConsole.begin(115200);    // Will always be 115200 bps
+#if !ARDUINO_USB_MODE
+  USB.begin();
+#endif  // No ARDUINO_USB_MODE
+  TasConsole.println();
+  AddLog(LOG_LEVEL_INFO, PSTR("CMD: Using embedded USB"));
+#else   // No USE_USB_SERIAL_CONSOLE
+  TasConsole = Serial;
+#endif  // USE_USB_SERIAL_CONSOLE
+#else   // No ESP32C3, S2 or S3
+  TasConsole = Serial;
+#endif  // ESP32C3, S2 or S3
+#else   // No ESP32
+  TasConsole = Serial;
+#endif  // ESP32
+
+  // Ready for AddLog use
 
 //  AddLog(LOG_LEVEL_INFO, PSTR("ADR: Settings %p, Log %p"), Settings, TasmotaGlobal.log_buffer);
 #ifdef ESP32
@@ -397,6 +484,7 @@ void setup(void) {
   if (VERSION & 0xff) {  // Development or patched version 6.3.0.10
     snprintf_P(TasmotaGlobal.version, sizeof(TasmotaGlobal.version), PSTR("%s.%d"), TasmotaGlobal.version, VERSION & 0xff);
   }
+
   // Thehackbox inserts "release" or "commit number" before compiling using sed -i -e 's/PSTR("(%s)")/PSTR("(85cff52-%s)")/g' tasmota.ino
   snprintf_P(TasmotaGlobal.image_name, sizeof(TasmotaGlobal.image_name), PSTR("(%s)"), PSTR(CODE_IMAGE_STR));  // Results in (85cff52-tasmota) or (release-tasmota)
 
@@ -424,7 +512,9 @@ void setup(void) {
   RotaryInit();
 #endif  // ROTARY_V1
 #ifdef USE_BERRY
-  BerryInit();
+  if (!TasmotaGlobal.no_autoexec) {
+    BerryInit();
+  }
 #endif // USE_BERRY
 
   XdrvCall(FUNC_PRE_INIT);
@@ -490,7 +580,7 @@ void BacklogLoop(void) {
 void SleepDelay(uint32_t mseconds) {
   if (!TasmotaGlobal.backlog_nodelay && mseconds) {
     uint32_t wait = millis() + mseconds;
-    while (!TimeReached(wait) && !Serial.available()) {  // We need to service serial buffer ASAP as otherwise we get uart buffer overrun
+    while (!TimeReached(wait) && !Serial.available() && !TasmotaGlobal.skip_sleep) {  // We need to service serial buffer ASAP as otherwise we get uart buffer overrun
       delay(1);
     }
   } else {
@@ -557,6 +647,9 @@ void Scheduler(void) {
   }
 
   if (!TasmotaGlobal.serial_local) { SerialInput(); }
+#ifdef ESP32
+  if (!tasconsole_serial) { TasConsoleInput(); }
+#endif  // ESP32
 
 #ifdef USE_ARDUINO_OTA
   ArduinoOtaLoop();
@@ -570,7 +663,7 @@ void loop(void) {
 
   uint32_t my_activity = millis() - my_sleep;
 
-  if (Settings->flag3.sleep_normal) {               // SetOption60 - Enable normal sleep instead of dynamic sleep
+  if (Settings->flag3.sleep_normal) {              // SetOption60 - Enable normal sleep instead of dynamic sleep
     //  yield();                                   // yield == delay(0), delay contains yield, auto yield in loop
     SleepDelay(TasmotaGlobal.sleep);               // https://github.com/esp8266/Arduino/issues/2021
   } else {
