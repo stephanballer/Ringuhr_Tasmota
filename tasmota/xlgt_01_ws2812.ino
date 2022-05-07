@@ -233,6 +233,33 @@ int mod(int a, int b)
    return ret;
 }
 
+//input: ratio is between 0.0 to 1.0
+//output: rgb color
+void rgb(uint16_t ratio, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    //we want to normalize ratio so that it fits in to 6 regions
+    //where each region is 256 units long
+    uint8_t max_br = 0x40;
+    uint16_t normalized = (ratio * 6 * max_br) / 3600;
+
+    //find the region for this position
+    uint16_t region = normalized / max_br;
+
+    //find the distance to the start of the closest region
+    uint16_t x = normalized % max_br;
+
+    //*r = 1, *g = 0, *b = 0;
+    switch (region)
+    {
+    case 0: *r = max_br; *g = 0;      *b = 0;      *g += x; break;
+    case 1: *r = max_br; *g = max_br; *b = 0;      *r -= x; break;
+    case 2: *r = 1;      *g = max_br; *b = 0;      *b += x; break;
+    case 3: *r = 1;      *g = max_br; *b = max_br; *g -= x; break;
+    case 4: *r = 1;      *g = 0;      *b = max_br; *r += x; break;
+    case 5: *r = max_br; *g = 0;      *b = max_br; *b -= x; break;
+    }
+}
+
 void Ws2812UpdatePixelColor(int position, struct WsColor hand_color, float offset)
 {
 #if (USE_WS2812_CTYPE > NEO_3LED)
@@ -240,53 +267,80 @@ void Ws2812UpdatePixelColor(int position, struct WsColor hand_color, float offse
 #else
   RgbColor color;
 #endif
+  //Bh1750_sensors[sensor_index].illuminance
 
-  uint32_t mod_position = mod(position, (int)Settings->light_pixels);
+  //uint32_t mod_position = mod(position, (int)Settings->light_pixels);
 
-  color = strip->GetPixelColor(mod_position);
+  color = strip->GetPixelColor(position);
   float dimmer = 100 / (float)Settings->light_dimmer;
+#if (USE_WS2812_CTYPE > NEO_3LED)
+  if (hand_color.red == 0 && hand_color.blue == hand_color.green) {
+    color.W = tmin(color.W + ((hand_color.green / dimmer) * offset), 255);
+  }
+  else {
+#endif
   color.R = tmin(color.R + ((hand_color.red / dimmer) * offset), 255);
   color.G = tmin(color.G + ((hand_color.green / dimmer) * offset), 255);
   color.B = tmin(color.B + ((hand_color.blue / dimmer) * offset), 255);
-  strip->SetPixelColor(mod_position, color);
+#if (USE_WS2812_CTYPE > NEO_3LED)
+  }
+#endif
+  strip->SetPixelColor(position, color);
 }
 
-void Ws2812UpdateHand(int position, uint32_t index)
+void Ws2812UpdateHand(int position, uint32_t index, int offset)
 {
-  uint32_t width = Settings->light_width;
-  if (index < WS_MARKER) { width = Settings->ws_width[index]; }
-  if (!width) { return; }  // Skip
+  //uint32_t width = Settings->light_width;
+  //if (index < WS_MARKER) { width = Settings->ws_width[index]; }
+  //if (!width) { return; }  // Skip
+  uint32_t width = Settings->light_pixels / 120;
+  if (width == 0)
+    width = 1;
 
-  position = (position + Settings->light_rotation) % Settings->light_pixels;
-
+  //position = (position + Settings->light_rotation) % (Settings->light_pixels / 2);
   if (Settings->flag.ws_clock_reverse) {  // SetOption16 - Switch between clockwise or counter-clockwise
-    position = Settings->light_pixels -position;
+    position = (Settings->light_pixels / 2) - position;
   }
+
   WsColor hand_color = { Settings->ws_color[index][WS_RED], Settings->ws_color[index][WS_GREEN], Settings->ws_color[index][WS_BLUE] };
 
-  Ws2812UpdatePixelColor(position, hand_color, 1);
-
-  uint32_t range = ((width -1) / 2) +1;
-  for (uint32_t h = 1; h < range; h++) {
-    float offset = (float)(range - h) / (float)range;
-    Ws2812UpdatePixelColor(position -h, hand_color, offset);
-    Ws2812UpdatePixelColor(position +h, hand_color, offset);
+  if (index == WS_MARKER || index == WS_SECOND) {
+    position += (Settings->light_pixels - width) / 2;
+    for (uint32_t h = position; h < position + width; h++) {
+      Ws2812UpdatePixelColor(((h + Settings->light_rotation) % (Settings->light_pixels / 2)) + offset, hand_color, 1);
+    }
+  }
+  else if (index == WS_HOUR) {
+    position += (Settings->light_pixels - 5 * width) / 2;
+    for (uint32_t h = position; h < position + 5 * width; h++) {
+      Ws2812UpdatePixelColor(((h + Settings->light_rotation) % (Settings->light_pixels / 2)) + offset, hand_color, 1);
+    }
+  }
+  else {
+    for (uint32_t h = offset; h < (position + offset) ; h++) {
+      Ws2812UpdatePixelColor(((h + Settings->light_rotation) % (Settings->light_pixels / 2)) + offset, hand_color, 1);
+    }
   }
 }
 
 void Ws2812Clock(void)
 {
   strip->ClearTo(0); // Reset strip
-  int clksize = 60000 / (int)Settings->light_pixels;
+  int clksize = 60000 / ((int)Settings->light_pixels / 2);
 
-  Ws2812UpdateHand((RtcTime.second * 1000) / clksize, WS_SECOND);
-  Ws2812UpdateHand((RtcTime.minute * 1000) / clksize, WS_MINUTE);
-  Ws2812UpdateHand((((RtcTime.hour % 12) * 5000) + ((RtcTime.minute * 1000) / 12 )) / clksize, WS_HOUR);
-  if (Settings->ws_color[WS_MARKER][WS_RED] + Settings->ws_color[WS_MARKER][WS_GREEN] + Settings->ws_color[WS_MARKER][WS_BLUE]) {
+//  if (Settings->ws_color[WS_MARKER][WS_RED] + Settings->ws_color[WS_MARKER][WS_GREEN] + Settings->ws_color[WS_MARKER][WS_BLUE]) {
+    //if (Settings->ws_color[WS_MARKER][WS_RED] == 0xfe && Settings->ws_color[WS_MARKER][WS_GREEN] == 0xfe && Settings->ws_color[WS_MARKER][WS_BLUE] == 0xfe)
+//    rgb(60*RtcTime.minute+RtcTime.second, &Settings->ws_color[WS_MARKER][WS_RED], &Settings->ws_color[WS_MARKER][WS_GREEN], &Settings->ws_color[WS_MARKER][WS_BLUE]);
     for (uint32_t i = 0; i < 12; i++) {
-      Ws2812UpdateHand((i * 5000) / clksize, WS_MARKER);
+      Ws2812UpdateHand((i * 5000) / clksize, WS_MARKER, 0);
+      Ws2812UpdateHand((i * 5000) / clksize, WS_MARKER, Settings->light_pixels / 2);
     }
-  }
+ // }
+
+  Ws2812UpdateHand((RtcTime.second * 1000) / clksize, WS_SECOND, 0);
+  Ws2812UpdateHand((RtcTime.second * 1000) / clksize, WS_SECOND, Settings->light_pixels / 2);
+  Ws2812UpdateHand((RtcTime.minute * 1000) / clksize, WS_MINUTE, 0);
+  Ws2812UpdateHand(((RtcTime.hour % 12) * 5000) / clksize, WS_HOUR, Settings->light_pixels / 2);
 
   Ws2812StripShow();
 }

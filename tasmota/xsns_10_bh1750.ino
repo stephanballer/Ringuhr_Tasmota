@@ -106,6 +106,14 @@ bool Bh1750Read(uint32_t sensor_index) {
     illuminance /= 2;
   }
   Bh1750_sensors[sensor_index].illuminance = illuminance;
+  if (illuminance > 99)
+    illuminance = 100;
+  else if (illuminance < 1)
+    illuminance = 1;
+  else
+    illuminance = 3 * illuminance;
+
+  Settings->light_dimmer = (int)(0.75 * Settings->light_dimmer + 0.25 * illuminance);
 
   Bh1750_sensors[sensor_index].valid = SENSOR_MAX_MISS;
   return true;
