@@ -397,7 +397,7 @@ void Ws2812Gradient(uint32_t schemenr)
   if (scheme.count < 2) { return; }
 
   uint32_t repeat = kWsRepeat[Settings->light_width];  // number of scheme.count per ledcount
-  uint32_t range = (uint32_t)ceil((float)Settings->light_pixels / (float)repeat);
+  uint32_t range = (uint32_t)ceil((float)Settings->light_pixels / (float)(2 * repeat));
   uint32_t gradRange = (uint32_t)ceil((float)range / (float)(scheme.count - 1));
   uint32_t speed = ((Settings->light_speed * 2) -1) * (STATES / 10);
   uint32_t offset = speed > 0 ? Light.strip_timer_counter / speed : 0;
@@ -406,7 +406,7 @@ void Ws2812Gradient(uint32_t schemenr)
   Ws2812GradientColor(schemenr, &oldColor, range, gradRange, offset);
   currentColor = oldColor;
   speed = speed ? speed : 1;    // should never happen, just avoid div0
-  for (uint32_t i = 0; i < Settings->light_pixels; i++) {
+  for (uint32_t i = 0; i < Settings->light_pixels / 2; i++) {
     if (kWsRepeat[Settings->light_width] > 1) {
       Ws2812GradientColor(schemenr, &currentColor, range, gradRange, i + offset + 1);
     }
@@ -415,6 +415,7 @@ void Ws2812Gradient(uint32_t schemenr)
     c.G = wsmap(Light.strip_timer_counter % speed, 0, speed, oldColor.green, currentColor.green);
     c.B = wsmap(Light.strip_timer_counter % speed, 0, speed, oldColor.blue, currentColor.blue);
     strip->SetPixelColor(i, c);
+    strip->SetPixelColor((Settings->light_pixels / 2) + i, c);
     oldColor = currentColor;
   }
   Ws2812StripShow();
