@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 ![Ringuhr logo](tools/logo/example.jpg)
-=======
-![Ringuhr logo](http://jalopi.net/images/Ringuhr.jpg)
->>>>>>> 4f7b58c2fc418022e1d6825a5fc42fda9fd6c628
 
 Fork of Tasmota with a different take on the Clock LED scheme.
 
