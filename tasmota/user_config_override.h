@@ -92,6 +92,10 @@ Examples :
 #define USE_BH1750
 #endif
 
+#ifndef USE_SCD40
+#define USE_SCD40
+#endif
+
 #ifndef USE_WS2812
 #define USE_WS2812
 #endif
@@ -105,5 +109,14 @@ Examples :
 #undef USE_WS2812_CTYPE
 #endif
 #define USE_WS2812_CTYPE     NEO_GRBW   
+
+#ifndef USE_RULES
+#define USE_RULES
+#endif
+
+
+
+//#define USE_EXPRESSION         // Add support for expression evaluation in rules (+3k2 code, +64 bytes mem)  
+//#define SUPPORT_IF_STATEMENT
 
 #endif  // _USER_CONFIG_OVERRIDE_H_

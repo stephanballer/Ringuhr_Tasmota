@@ -1,6 +1,5 @@
-![Ringuhr logo](tools/logo/example.jpg)
-
-Fork of Tasmota with a different take on the Clock LED scheme.
+Fork of Tasmota with a different take on the Clock LED scheme. Made for [this](https://github.com/stephanballer/lightring_parts) project.
+Depending on the direction of the lights, modify the last argument of WS2812_UpdateHand in tasmota/xlgt_01_ws2812.ino to the respective value.
 
 <hr></hr>
 

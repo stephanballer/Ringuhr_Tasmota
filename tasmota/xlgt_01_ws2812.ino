@@ -297,7 +297,7 @@ void Ws2812UpdatePixelColor(int position, struct WsColor hand_color, float offse
   strip->SetPixelColor(position, color);
 }
 
-void Ws2812UpdateHand(int position, uint32_t index, int offset)
+void Ws2812UpdateHand(int position, uint32_t index, int offset, uint8_t reverse)
 {
   //uint32_t width = Settings->light_width;
   //if (index < WS_MARKER) { width = Settings->ws_width[index]; }
@@ -307,7 +307,7 @@ void Ws2812UpdateHand(int position, uint32_t index, int offset)
     width = 1;
 
   //position = (position + Settings->light_rotation) % (Settings->light_pixels / 2);
-  if (Settings->flag.ws_clock_reverse) {  // SetOption16 - Switch between clockwise or counter-clockwise
+  if (Settings->flag.ws_clock_reverse != reverse) {  // SetOption16 - Switch between clockwise or counter-clockwise
     position = (Settings->light_pixels / 2) - position;
   }
 
@@ -326,9 +326,13 @@ void Ws2812UpdateHand(int position, uint32_t index, int offset)
     }
   }
   else {
-    for (uint32_t h = offset; h < (position + offset) ; h++) {
+    position += (Settings->light_pixels - 1 * width) / 2;
+    for (uint32_t h = position; h < position + 1 * width; h++) {
       Ws2812UpdatePixelColor(((h + Settings->light_rotation) % (Settings->light_pixels / 2)) + offset, hand_color, 1);
     }
+    //for (uint32_t h = offset; h < (position + offset) ; h++) {
+    //  Ws2812UpdatePixelColor(((h + Settings->light_rotation) % (Settings->light_pixels / 2)) + offset, hand_color, 1);
+    //}
   }
 }
 
@@ -341,18 +345,22 @@ void Ws2812Clock(void)
     //if (Settings->ws_color[WS_MARKER][WS_RED] == 0xfe && Settings->ws_color[WS_MARKER][WS_GREEN] == 0xfe && Settings->ws_color[WS_MARKER][WS_BLUE] == 0xfe)
 //    rgb(60*RtcTime.minute+RtcTime.second, &Settings->ws_color[WS_MARKER][WS_RED], &Settings->ws_color[WS_MARKER][WS_GREEN], &Settings->ws_color[WS_MARKER][WS_BLUE]);
     for (uint32_t i = 0; i < 12; i++) {
-      Ws2812UpdateHand((i * 5000) / clksize, WS_MARKER, 0);
-      Ws2812UpdateHand((i * 5000) / clksize, WS_MARKER, Settings->light_pixels / 2);
+      Ws2812UpdateHand((i * 5000) / clksize, WS_MARKER, 0, 0);
+      Ws2812UpdateHand((i * 5000) / clksize, WS_MARKER, Settings->light_pixels / 2, 0);
     }
  // }
 
-  Ws2812UpdateHand((RtcTime.second * 1000) / clksize, WS_SECOND, 0);
-  Ws2812UpdateHand((RtcTime.second * 1000) / clksize, WS_SECOND, Settings->light_pixels / 2);
-  Ws2812UpdateHand((RtcTime.minute * 1000) / clksize, WS_MINUTE, 0);
-  Ws2812UpdateHand(((RtcTime.hour % 12) * 5000) / clksize, WS_HOUR, Settings->light_pixels / 2);
+  // outer ring (if leds go clockwise set last argument to 0, else 1):
+  Ws2812UpdateHand((RtcTime.second * 1000) / clksize, WS_SECOND, 0, 1);
+  Ws2812UpdateHand((RtcTime.minute * 1000) / clksize, WS_MINUTE, 0, 1);
+
+  // inner ring (if leds got clockwise set last argument to 0, else 1):
+  Ws2812UpdateHand((RtcTime.second * 1000) / clksize, WS_SECOND, Settings->light_pixels / 2, 0);
+  Ws2812UpdateHand(((RtcTime.hour % 12) * 5000) / clksize, WS_HOUR, Settings->light_pixels / 2, 0);
 
   Ws2812StripShow();
 }
+asdklf
 
 void Ws2812GradientColor(uint32_t schemenr, struct WsColor* mColor, uint32_t range, uint32_t gradRange, uint32_t i)
 {
@@ -437,7 +445,7 @@ void Ws2812Bars(uint32_t schemenr)
 
   ColorScheme scheme = kSchemes[schemenr];
 
-  uint32_t maxSize = Settings->light_pixels / scheme.count;
+  uint32_t maxSize = Settings->light_pixels / (2 * scheme.count);
   if (kWidth[Settings->light_width] > maxSize) { maxSize = 0; }
 
   uint32_t speed = ((Settings->light_speed * 2) -1) * (STATES / 10);
@@ -455,12 +463,13 @@ void Ws2812Bars(uint32_t schemenr)
     mcolor[i].blue = (uint8_t)fmyBlu;
   }
   uint32_t colorIndex = offset % scheme.count;
-  for (uint32_t i = 0; i < Settings->light_pixels; i++) {
+  for (uint32_t i = 0; i < Settings->light_pixels/2; i++) {
     if (maxSize) { colorIndex = ((i + offset) % (scheme.count * kWidth[Settings->light_width])) / kWidth[Settings->light_width]; }
     c.R = mcolor[colorIndex].red;
     c.G = mcolor[colorIndex].green;
     c.B = mcolor[colorIndex].blue;
     strip->SetPixelColor(i, c);
+    strip->SetPixelColor(Settings->light_pixels/2 + i, c);
   }
   Ws2812StripShow();
 }
@@ -531,14 +540,14 @@ void Ws2812Steps(uint32_t schemenr) {
 	int32_t current_position = Light.strip_timer_counter / speed;
 
 	//all pixels are shown already | rotation change will not change current state
-	if (current_position >  Settings->light_pixels / Settings->light_step_pixels + scheme_count ) {
+	if (current_position >  Settings->light_pixels / (2 *Settings->light_step_pixels) + scheme_count ) {
 		return;
 	}
 
   int32_t colorIndex;
   int32_t step_nr;
 
-  for (uint32_t i = 0; i < Settings->light_pixels; i++) {
+  for (uint32_t i = 0; i < Settings->light_pixels/2; i++) {
 		step_nr = i / Settings->light_step_pixels;
 		colorIndex = current_position - step_nr;
 	  if (colorIndex < 0) { colorIndex = 0; }
@@ -548,9 +557,11 @@ void Ws2812Steps(uint32_t schemenr) {
     c.B = mcolor[colorIndex].blue;
 		// Adjust the scheme rotation
 		if (Settings->light_rotation & 0x02) {
+			strip->SetPixelColor(Settings->light_pixels/2 - i - 1, c);
 			strip->SetPixelColor(Settings->light_pixels - i - 1, c);
 		} else {
 			strip->SetPixelColor(i, c);
+			strip->SetPixelColor(Settings->light_pixels/2 + i, c);
 		}
   }
   Ws2812StripShow();
@@ -589,12 +600,13 @@ void Ws2812DDP(void)
   }
 
   // No verification checks performed against packet besides length
-  if (payload.size() > (9+3*Settings->light_pixels)) {
-    for (uint32_t i = 0; i < Settings->light_pixels; i++) {
+  if (payload.size() > (9+3*Settings->light_pixels/2)) {
+    for (uint32_t i = 0; i < Settings->light_pixels/2; i++) {
       c.R = payload[10+3*i];
       c.G = payload[11+3*i];
       c.B = payload[12+3*i];
       strip->SetPixelColor(i, c);
+      strip->SetPixelColor(Settings->light_pixels/2 + i, c);
     }
     Ws2812StripShow();
   }
